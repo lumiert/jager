@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import os
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def data_directory() -> Path:
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    path = root / "Jager"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class Database:
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path is not None else data_directory() / "jager.sqlite3"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._connection = sqlite3.connect(self.path, check_same_thread=False)
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON")
+        self._initialize()
+
+    def _initialize(self) -> None:
+        with self._lock, self._connection:
+            self._connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL DEFAULT 'Nova conversa',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    completed INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                PRAGMA user_version = 1;
+                """
+            )
+
+    def create_conversation(self, title: str = "Nova conversa") -> int:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "INSERT INTO conversations(title, created_at) VALUES (?, ?)",
+                (title, _timestamp()),
+            )
+            return int(cursor.lastrowid)
+
+    def list_conversations(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT id, title, created_at FROM conversations ORDER BY id DESC"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def latest_conversation(self) -> int:
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT id FROM conversations ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return int(row["id"]) if row else self.create_conversation()
+
+    def add_message(self, conversation_id: int, role: str, content: str) -> None:
+        if role not in {"user", "assistant"}:
+            raise ValueError("Papel de mensagem inválido.")
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO messages(conversation_id, role, content, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (conversation_id, role, content, _timestamp()),
+            )
+
+    def conversation_messages(self, conversation_id: int) -> list[dict[str, str]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id",
+                (conversation_id,),
+            ).fetchall()
+            return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+    def create_note(self, content: str) -> int:
+        content = content.strip()
+        if not content:
+            raise ValueError("A nota não pode ficar vazia.")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "INSERT INTO notes(content, created_at) VALUES (?, ?)",
+                (content, _timestamp()),
+            )
+            return int(cursor.lastrowid)
+
+    def list_notes(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT id, content, created_at FROM notes ORDER BY id DESC"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def create_task(self, title: str) -> int:
+        title = title.strip()
+        if not title:
+            raise ValueError("A tarefa não pode ficar vazia.")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "INSERT INTO tasks(title, created_at) VALUES (?, ?)",
+                (title, _timestamp()),
+            )
+            return int(cursor.lastrowid)
+
+    def list_tasks(self, pending_only: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT id, title, completed, created_at FROM tasks"
+        if pending_only:
+            query += " WHERE completed = 0"
+        query += " ORDER BY id DESC"
+        with self._lock:
+            return [dict(row) for row in self._connection.execute(query).fetchall()]
+
+    def complete_task(self, task_id: int) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE tasks SET completed = 1 WHERE id = ? AND completed = 0",
+                (task_id,),
+            )
+            return cursor.rowcount > 0
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT value FROM settings WHERE key = ?", (key,)
+            ).fetchone()
+            return str(row["value"]) if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
