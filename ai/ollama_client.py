@@ -199,7 +199,10 @@ class OllamaClient:
             except (OSError, http.client.HTTPException, ValueError) as error:
                 raise self._translate(error, watchdog) from error
             if response.status >= 400:
-                text = response.read(4096).decode("utf-8", errors="replace")
+                try:
+                    text = response.read(4096).decode("utf-8", errors="replace")
+                except (OSError, http.client.HTTPException, ValueError) as error:
+                    raise self._translate(error, watchdog) from error
                 try:
                     detail = str(json.loads(text).get("error") or "")
                 except (ValueError, AttributeError):
