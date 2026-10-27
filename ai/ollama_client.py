@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -57,3 +59,52 @@ class OllamaClient:
         if not isinstance(content, str):
             raise OllamaError("O Ollama não retornou uma resposta de texto.")
         return content.strip()
+
+    def chat_stream(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        cancelled: threading.Event,
+    ):
+        request = Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(
+                {"model": model, "messages": messages, "stream": True}
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=min(self.timeout, 1.0)) as response:
+                while not cancelled.is_set():
+                    try:
+                        line = response.readline()
+                    except (TimeoutError, socket.timeout):
+                        continue
+                    if not line:
+                        break
+                    try:
+                        event = json.loads(line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                        raise OllamaError(
+                            "O Ollama retornou um fragmento de resposta inválido."
+                        ) from error
+                    if not isinstance(event, dict):
+                        raise OllamaError("O Ollama retornou um evento inválido.")
+                    if event.get("error"):
+                        raise OllamaError(str(event["error"]))
+                    message = event.get("message")
+                    fragment = message.get("content") if isinstance(message, dict) else None
+                    if isinstance(fragment, str) and fragment:
+                        yield fragment
+                    if event.get("done"):
+                        break
+        except HTTPError as error:
+            message = error.read().decode("utf-8", errors="replace")
+            raise OllamaError(
+                f"Ollama respondeu com erro: {message or error.code}"
+            ) from error
+        except (URLError, TimeoutError, OSError) as error:
+            if cancelled.is_set():
+                return
+            raise OllamaError("A conexão com o Ollama foi interrompida.") from error
