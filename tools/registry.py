@@ -360,33 +360,6 @@ class ToolRegistry:
                 lambda args, cancelled: self._search_vault_notes(args, cancelled),
                 availability=self._vault_availability,
             ),
-            Tool(
-                "list_tasks", "Listar tarefas",
-                "Consultar as tarefas locais do Jager. Use pending_only para listar somente tarefas pendentes.",
-                "Tarefas", _object_schema({"pending_only": {"type": "boolean"}}, []), "low", False,
-                lambda args, _c: self._list_tasks(args),
-            ),
-            Tool(
-                "create_task", "Criar tarefa",
-                "Criar uma tarefa no banco local do Jager. NÃO use para listas de hoje, trabalho, projetos, pendências ou ideias (essas são notas do Vault: Hoje.md, Trabalho.md, Projetos.md, Pendências.md, Ideias.md). Não duplica uma tarefa pendente com o mesmo título.",
-                "Tarefas",
-                _object_schema(
-                    {"title": {"type": "string", "minLength": 1, "maxLength": 500}}, ["title"]
-                ),
-                "medium", True,
-                lambda args, _c: self._create_task(args),
-            ),
-            Tool(
-                "complete_task", "Concluir tarefa",
-                "Marcar uma tarefa local do Jager como concluída pelo número.",
-                "Tarefas",
-                _object_schema(
-                    {"task_id": {"type": "integer", "minimum": 1, "maximum": 999999999}},
-                    ["task_id"],
-                ),
-                "medium", True,
-                lambda args, _c: self._complete_task(args),
-            ),
         ]
 
     # ------------------------------------------------------------------ catalog
@@ -764,26 +737,6 @@ class ToolRegistry:
         if content.replace("\r\n", "\n") != args["content"].replace("\r\n", "\n"):
             raise ToolError("A edição da nota não pôde ser verificada.")
         return {"updated": args["path"], "sha256": version, "verified": True}
-
-    def _list_tasks(self, args: dict[str, Any]) -> dict[str, Any]:
-        return {"tasks": self.database.list_tasks(args.get("pending_only", False))}
-
-    def _create_task(self, args: dict[str, Any]) -> dict[str, Any]:
-        title = args["title"].strip()
-        for task in self.database.list_tasks(pending_only=True):
-            if task["title"].strip().casefold() == title.casefold():
-                return {"id": task["id"], "title": task["title"], "already_existed": True}
-        task_id = self.database.create_task(title)
-        return {"id": task_id, "title": title, "already_existed": False}
-
-    def _complete_task(self, args: dict[str, Any]) -> dict[str, Any]:
-        task_id = args["task_id"]
-        if self.database.complete_task(task_id):
-            return {"id": task_id, "completed": True, "already_completed": False}
-        for task in self.database.list_tasks():
-            if task["id"] == task_id and task["completed"]:
-                return {"id": task_id, "completed": True, "already_completed": True}
-        raise ToolError(f"Não encontrei a tarefa {task_id}.")
 
     def _integration_status(self, _args: dict[str, Any]) -> dict[str, Any]:
         return {

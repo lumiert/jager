@@ -274,7 +274,8 @@ class SettingsTests(UiBase):
         self.assertTrue(self.window._apply_settings(controls))
         tools = self.assistant.tools
         self.assertTrue(tools.execute("system_info", {})["ok"])
-        self.assertEqual(tools.execute("list_tasks", {})["status"], "denied")
+        self.assertNotIn("list_tasks", tools.tool_names())
+        self.assertEqual(tools.execute("list_tasks", {})["status"], "invalid")
         self.assertEqual(Assistant(self.database, self.ollama, self.settings).tools.permissions.policy("system_info"), "allow")
         self.assertEqual(self.settings.get("ollama_idle_timeout"), "77")
 

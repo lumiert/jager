@@ -55,14 +55,14 @@ Em **Configurações**, as preferências dos dispositivos de entrada e saída s�
 
 - `Anote que preciso comprar filamento PETG` (cria um `.md` no Vault configurado)
 - `Minhas notas`
-- `Crie uma tarefa revisar o projeto`
-- `Minhas tarefas`
-- `Conclua a tarefa 1`
+- `Crie uma tarefa revisar o projeto` (salva em `Pendências.md`)
+- `Minhas tarefas` (consulta as notas Markdown do Vault)
+- `Conclua a tarefa "revisar o projeto"` (atualiza o item na nota Markdown)
 - `Abra o navegador`, `Abra o VS Code`, `Abra o Mixxx` ou `Abra o Explorador`
 - `Abra a pasta Downloads`, `Documentos`, `Área de trabalho` ou `Músicas`
 - `Pesquise na internet por modelos locais leves`
 
-Tarefas são tratadas localmente; novas notas são criadas no Vault configurado. Registros antigos de notas no banco de dados são preservados. Abertura de aplicativos usa apenas nomes permitidos e não executa comandos fornecidos pelo modelo ou pelo usuário. Os caminhos de pastas disponíveis correspondem a pastas conhecidas dentro do perfil do usuário.
+Tarefas são armazenadas exclusivamente em notas Markdown no Vault configurado: `Hoje.md`, `Trabalho.md`, `Projetos.md`, `Pendências.md` e `Ideias.md`. Listas antigas de tarefas no banco de dados não são mais usadas; novos bancos não criam essa tabela. Novas notas são criadas no Vault configurado. Registros antigos de notas no banco de dados são preservados. Abertura de aplicativos usa apenas nomes permitidos e não executa comandos fornecidos pelo modelo ou pelo usuário. Os caminhos de pastas disponíveis correspondem a pastas conhecidas dentro do perfil do usuário.
 
 `open_url` abre uma página no navegador padrão sem ler seu conteúdo. Para recuperar conteúdo e resultados para o modelo, use `web_fetch` e `web_search`.
 

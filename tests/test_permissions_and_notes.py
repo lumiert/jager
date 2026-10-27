@@ -222,14 +222,16 @@ class NoteFidelityTests(Base):
         self.assertEqual(len(list(self.vault.iterdir())), 1)
 
     def test_identical_repeated_call_in_one_answer_is_not_executed_twice(self) -> None:
-        self.allow("create_task")
+        self.allow("create_vault_note")
         call = lambda: iter([{"tool_calls": [{"function": {
-            "name": "create_task", "arguments": {"title": "Pagar conta"}}}]}])
+            "name": "create_vault_note",
+            "arguments": {"name": "Pendências", "content": "# Pendências\n\n- [ ] Pagar conta\n"}}}]}])
         self.ollama.chat_stream_events.side_effect = [call(), call(), iter([{"content": "ok"}])]
         self.assistant.respond_stream(
-            self.conversation, "Faça algo", lambda _f: None, threading.Event()
+            self.conversation, "Pagar conta", lambda _f: None, threading.Event()
         )
-        self.assertEqual(len(self.database.list_tasks()), 1)
+        content = (self.vault / "Pendências.md").read_text(encoding="utf-8")
+        self.assertEqual(content.count("- [ ] Pagar conta"), 1)
 
     def test_loop_without_progress_is_aborted(self) -> None:
         self.allow("system_info")
@@ -241,11 +243,11 @@ class NoteFidelityTests(Base):
             )
 
     def test_iteration_limit_is_configurable(self) -> None:
-        self.allow("list_tasks")
+        self.allow("system_info")
         self.settings.set("tool_iteration_limit", "1")
         calls = [
-            iter([{"tool_calls": [{"function": {"name": "list_tasks", "arguments": {"pending_only": flag}}}]}])
-            for flag in (True, False, True)
+            iter([{"tool_calls": [{"function": {"name": "system_info", "arguments": {}}}]}])
+            for _ in range(3)
         ]
         self.ollama.chat_stream_events.side_effect = calls
         with self.assertRaises(OllamaError):

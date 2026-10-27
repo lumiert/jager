@@ -1,1 +1,0 @@
-create_task: cria uma tarefa no banco interno do Jager, SOMENTE quando o usuário pedir explicitamente uma tarefa interna do app. Listas de hoje/trabalho/projetos/pendências/ideias são notas do Vault (veja checklists.md). `title` deve ser a frase completa, nunca uma única palavra.

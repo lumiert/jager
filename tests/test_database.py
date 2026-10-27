@@ -15,15 +15,18 @@ class DatabaseTests(unittest.TestCase):
         self.database.close()
         self.directory.cleanup()
 
-    def test_notes_and_tasks_are_persisted(self) -> None:
+    def test_notes_are_persisted_without_an_internal_task_table(self) -> None:
         note_id = self.database.create_note("Comprar filamento PETG")
-        task_id = self.database.create_task("Revisar o projeto")
-        self.database.complete_task(task_id)
 
         self.assertEqual(self.database.list_notes()[0]["id"], note_id)
         self.assertEqual(self.database.list_notes()[0]["content"], "Comprar filamento PETG")
-        self.assertEqual(self.database.list_tasks()[0]["completed"], 1)
-        self.assertEqual(self.database.list_tasks(pending_only=True), [])
+        tables = {
+            row["name"]
+            for row in self.database._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        self.assertNotIn("tasks", tables)
 
     def test_settings_survive_database_reopen(self) -> None:
         self.database.set_setting("ollama_model", "qwen3:1.7b")

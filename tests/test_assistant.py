@@ -30,18 +30,38 @@ class AssistantTests(unittest.TestCase):
         self.database.close()
         self.directory.cleanup()
 
-    def test_note_and_task_commands_use_local_storage(self) -> None:
+    def test_notes_and_tasks_use_vault_markdown(self) -> None:
         note = self.assistant.respond(self.conversation_id, "Anote que comprar PETG")
         task = self.assistant.respond(self.conversation_id, "Crie uma tarefa revisar código")
         notes = self.assistant.respond(self.conversation_id, "Minhas notas")
         tasks = self.assistant.respond(self.conversation_id, "Tarefas pendentes")
 
         self.assertIn("Nota criada no Vault", note)
-        self.assertIn("Tarefa criada", task)
+        self.assertIn("Pendências.md", task)
         self.assertIn("comprar-petg.md", notes)
-        self.assertTrue(list(self.vault_path.glob("*.md")))
-        self.assertIn("revisar código", tasks)
+        self.assertEqual(
+            (self.vault_path / "Pendências.md").read_text(encoding="utf-8"),
+            "# Pendências\n\n- [ ] revisar código\n",
+        )
+        self.assertIn("- [ ] revisar código", tasks)
+        self.assertFalse(hasattr(self.database, "create_task"))
+        self.assertTrue(
+            {"list_tasks", "create_task", "complete_task"}.isdisjoint(
+                self.assistant.tools.tool_names()
+            )
+        )
         self.ollama.chat.assert_not_called()
+
+    def test_today_task_request_adds_full_item_to_today_markdown(self) -> None:
+        answer = self.assistant.respond(
+            self.conversation_id,
+            "Hoje o João vem buscar as encomendas aqui na loja, adicione na lista de hoje",
+        )
+        self.assertIn("Hoje.md", answer)
+        self.assertEqual(
+            (self.vault_path / "Hoje.md").read_text(encoding="utf-8"),
+            "# Hoje\n\n- [ ] o João vem buscar as encomendas aqui na loja\n",
+        )
 
     def test_regular_chat_uses_ollama_and_is_saved(self) -> None:
         self.ollama.chat_stream_events.return_value = iter(

@@ -54,12 +54,6 @@ class Database:
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    completed INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS tool_audit (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -199,33 +193,6 @@ class Database:
                 "SELECT id, content, created_at FROM notes ORDER BY id DESC"
             ).fetchall()
             return [dict(row) for row in rows]
-
-    def create_task(self, title: str) -> int:
-        title = title.strip()
-        if not title:
-            raise ValueError("A tarefa não pode ficar vazia.")
-        with self._lock, self._connection:
-            cursor = self._connection.execute(
-                "INSERT INTO tasks(title, created_at) VALUES (?, ?)",
-                (title, _timestamp()),
-            )
-            return int(cursor.lastrowid)
-
-    def list_tasks(self, pending_only: bool = False) -> list[dict[str, Any]]:
-        query = "SELECT id, title, completed, created_at FROM tasks"
-        if pending_only:
-            query += " WHERE completed = 0"
-        query += " ORDER BY id DESC"
-        with self._lock:
-            return [dict(row) for row in self._connection.execute(query).fetchall()]
-
-    def complete_task(self, task_id: int) -> bool:
-        with self._lock, self._connection:
-            cursor = self._connection.execute(
-                "UPDATE tasks SET completed = 1 WHERE id = ? AND completed = 0",
-                (task_id,),
-            )
-            return cursor.rowcount > 0
 
     def add_tool_audit(
         self,
