@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 
 
@@ -35,9 +36,11 @@ class Vault:
             raise VaultError("Somente arquivos Markdown (.md) são suportados.")
         return path
 
-    def list_notes(self) -> list[str]:
+    def list_notes(self, cancelled: threading.Event | None = None) -> list[str]:
         notes: list[str] = []
         for directory, dirs, filenames in os.walk(self.root, followlinks=False):
+            if cancelled is not None and cancelled.is_set():
+                break
             dirs[:] = [
                 name
                 for name in dirs
@@ -105,12 +108,19 @@ class Vault:
     def create_note(self, relative_path: str, content: str = "") -> None:
         self.save_note(relative_path, content)
 
-    def search(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        cancelled: threading.Event | None = None,
+    ) -> list[tuple[str, str]]:
         terms = {term.casefold() for term in re.findall(r"\w+", query) if len(term) > 2}
         if not terms:
             return []
         matches: list[tuple[int, str, str]] = []
-        for relative in self.list_notes():
+        for relative in self.list_notes(cancelled):
+            if cancelled is not None and cancelled.is_set():
+                break
             path = self._checked_path(relative)
             try:
                 content = path.read_text(encoding="utf-8")
