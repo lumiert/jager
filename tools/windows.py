@@ -63,6 +63,21 @@ def open_folder(name: str) -> None:
         subprocess.Popen([opener, str(path)], shell=False)
 
 
+def open_file(path: str | Path) -> None:
+    target = Path(path)
+    if not target.is_file():
+        raise FileNotFoundError("O arquivo não existe.")
+    if os.name == "nt":
+        os.startfile(target)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(target)], shell=False)
+    else:
+        opener = shutil.which("xdg-open")
+        if opener is None:
+            raise RuntimeError("O utilitário para abrir arquivos não está disponível.")
+        subprocess.Popen([opener, str(target)], shell=False)
+
+
 def search_web(query: str) -> None:
     query = query.strip()
     if not query:

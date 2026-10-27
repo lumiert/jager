@@ -67,11 +67,24 @@ class OllamaClient:
         messages: list[dict[str, str]],
         cancelled: threading.Event,
     ):
+        for message in self.chat_stream_events(model, messages, cancelled):
+            fragment = message.get("content")
+            if isinstance(fragment, str) and fragment:
+                yield fragment
+
+    def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict],
+        cancelled: threading.Event,
+        tools: list[dict] | None = None,
+    ):
+        payload = {"model": model, "messages": messages, "stream": True}
+        if tools:
+            payload["tools"] = tools
         request = Request(
             f"{self.base_url}/api/chat",
-            data=json.dumps(
-                {"model": model, "messages": messages, "stream": True}
-            ).encode("utf-8"),
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -106,9 +119,8 @@ class OllamaClient:
                     if event.get("error"):
                         raise OllamaError(str(event["error"]))
                     message = event.get("message")
-                    fragment = message.get("content") if isinstance(message, dict) else None
-                    if isinstance(fragment, str) and fragment:
-                        yield fragment
+                    if isinstance(message, dict):
+                        yield message
                     if event.get("done"):
                         break
         except HTTPError as error:

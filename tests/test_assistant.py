@@ -42,7 +42,9 @@ class AssistantTests(unittest.TestCase):
         self.ollama.chat.assert_not_called()
 
     def test_regular_chat_uses_ollama_and_is_saved(self) -> None:
-        self.ollama.chat.return_value = "Olá!"
+        self.ollama.chat_stream_events.return_value = iter(
+            [{"content": "Olá!"}]
+        )
         answer = self.assistant.respond(self.conversation_id, "Oi Jager")
 
         self.assertEqual(answer, "Olá!")
@@ -52,7 +54,9 @@ class AssistantTests(unittest.TestCase):
         )
 
     def test_streamed_answer_is_emitted_and_saved_once(self) -> None:
-        self.ollama.chat_stream.return_value = iter(["Olá", " mundo!"])
+        self.ollama.chat_stream_events.return_value = iter(
+        [{"content": "Olá"}, {"content": " mundo!"}]
+        )
         fragments = []
         answer = self.assistant.respond_stream(
             self.conversation_id, "Oi", fragments.append, threading.Event()
@@ -66,7 +70,9 @@ class AssistantTests(unittest.TestCase):
 
     def test_cancellation_keeps_only_fragments_already_received(self) -> None:
         cancelled = threading.Event()
-        self.ollama.chat_stream.return_value = iter(["parcial", "descartado"])
+        self.ollama.chat_stream_events.return_value = iter(
+            [{"content": "parcial"}, {"content": "descartado"}]
+        )
         fragments = []
 
         def receive(fragment):

@@ -5,6 +5,9 @@ QWidget {
     font-family: "Segoe UI", sans-serif;
     font-size: 10pt;
 }
+QLabel, QToolTip {
+    background-color: transparent;
+}
 QFrame#sidebar, QFrame#header, QFrame#composer {
     background-color: #0D1526;
 }
@@ -29,7 +32,6 @@ QLineEdit, QComboBox, QPlainTextEdit {
     border: 1px solid #24334D;
     border-radius: 5px;
     padding: 10px;
-    selection-background-color: #3B82F6;
 }
 QPushButton {
     background-color: #121E33;
@@ -62,7 +64,8 @@ QListWidget::item {
     padding: 8px;
 }
 QListWidget::item:selected {
-    background-color: #1A2A45;
+    background-color: transparent;
+    border-left: 2px solid #60A5FA;
     color: #E8EEF8;
 }
 QProgressBar {

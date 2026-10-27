@@ -26,6 +26,39 @@ class OllamaClientTests(unittest.TestCase):
 
         self.assertEqual(fragments, ["Olá ", "ação\n"])
 
+    def test_chat_stream_sends_registered_tool_schemas_and_emits_tool_calls(self) -> None:
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "system_info",
+                "description": "System details",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+        event = {
+            "message": {
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "system_info", "arguments": {}}}
+                ],
+            },
+            "done": True,
+        }
+        response = BytesIO(json.dumps(event).encode() + b"\n")
+        with patch("ai.ollama_client.urlopen", return_value=response) as request_call:
+            messages = list(
+                OllamaClient("http://localhost:11434").chat_stream_events(
+                    "modelo",
+                    [{"role": "user", "content": "sistema"}],
+                    threading.Event(),
+                    tools=[tool],
+                )
+            )
+
+        payload = json.loads(request_call.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["tools"], [tool])
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["name"], "system_info")
+
 
 if __name__ == "__main__":
     unittest.main()

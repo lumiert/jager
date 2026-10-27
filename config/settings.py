@@ -23,6 +23,9 @@ class Settings:
         "ollama_model": "qwen3:1.7b",
         "vault_path": "",
         "streaming_audio": "false",
+        "audio_output_id": "default",
+        "voice_response_enabled": "false",
+        "tool_iteration_limit": "4",
     }
 
     def __init__(self, database: Database) -> None:

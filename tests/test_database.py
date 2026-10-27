@@ -27,11 +27,15 @@ class DatabaseTests(unittest.TestCase):
 
     def test_settings_survive_database_reopen(self) -> None:
         self.database.set_setting("ollama_model", "qwen3:1.7b")
+        self.database.set_setting("audio_output_id", "device-id")
+        self.database.set_setting("voice_response_enabled", "true")
         path = self.database.path
         self.database.close()
 
         reopened = Database(path)
         self.assertEqual(Settings(reopened).ollama_model, "qwen3:1.7b")
+        self.assertEqual(Settings(reopened).get("audio_output_id"), "device-id")
+        self.assertEqual(Settings(reopened).get("voice_response_enabled"), "true")
         reopened.close()
 
     def test_empty_notes_are_rejected(self) -> None:
