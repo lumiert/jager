@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -12,7 +13,9 @@ from PySide6.QtWidgets import QApplication
 from app.audio import PushToTalkWorker
 from app.audio_devices import (
     apply_output_device,
+    input_devices,
     output_identifier,
+    resolve_input_device,
     resolve_output_device,
 )
 from app.tts import SpeechSynthesisWorker
@@ -43,6 +46,23 @@ class FakeMediaDevices:
 
 
 class AudioDeviceTests(unittest.TestCase):
+    def test_input_devices_are_listed_and_saved_device_is_resolved(self) -> None:
+        devices = [
+            {"name": "Microfone", "max_input_channels": 1},
+            {"name": "Saída", "max_input_channels": 0},
+            {"name": "Headset", "max_input_channels": 2},
+        ]
+        sounddevice = types.SimpleNamespace(query_devices=lambda: devices)
+
+        self.assertEqual(
+            input_devices(sounddevice),
+            [("0", "Microfone"), ("2", "Headset")],
+        )
+        self.assertIsNone(resolve_input_device(sounddevice, "default"))
+        self.assertEqual(resolve_input_device(sounddevice, "2"), 2)
+        self.assertIsNone(resolve_input_device(sounddevice, "1"))
+        self.assertIsNone(resolve_input_device(sounddevice, "missing"))
+
     def test_default_and_specific_devices_resolve_without_changing_system_default(self) -> None:
         devices = FakeMediaDevices()
 
@@ -91,43 +111,35 @@ class AudioCaptureTests(unittest.TestCase):
         whisper.WhisperModel = model_class
         return {"sounddevice": sounddevice, "faster_whisper": whisper}
 
-    def test_local_speech_synthesis_returns_a_temporary_audio_file(self) -> None:
-        voices = [types.SimpleNamespace(id="pt-BR", name="Portuguese")]
+    def test_piper_synthesis_returns_a_temporary_audio_file(self) -> None:
+        class Voice:
+            def synthesize_wav(self, text, audio_file) -> None:
+                self.text = text
+                audio_file.setnchannels(1)
+                audio_file.setsampwidth(2)
+                audio_file.setframerate(22050)
+                audio_file.writeframes(b"\x00" * 64)
 
-        class Engine:
-            selected_voice = None
+        fake_piper = types.ModuleType("piper")
+        fake_piper.PiperVoice = types.SimpleNamespace(load=lambda _path: Voice())
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "pt.onnx"
+            model_path.touch()
+            Path(f"{model_path}.json").touch()
+            worker = SpeechSynthesisWorker("Olá, mundo.", str(model_path))
+            files = []
+            errors = []
+            worker.ready.connect(files.append)
+            worker.failed.connect(errors.append)
+            with patch.dict(sys.modules, {"piper": fake_piper}):
+                worker.start()
+                worker.wait(5000)
+                self.application.processEvents()
 
-            def getProperty(self, _key):
-                return voices
-
-            def setProperty(self, _key, value):
-                self.selected_voice = value
-
-            def save_to_file(self, _text, path):
-                Path(path).write_bytes(b"RIFF" + b"\x00" * 50)
-
-            def runAndWait(self):
-                pass
-
-            def stop(self):
-                pass
-
-        fake_tts = types.ModuleType("pyttsx3")
-        fake_tts.init = lambda **_kwargs: Engine()
-        worker = SpeechSynthesisWorker("Olá, mundo.")
-        files = []
-        errors = []
-        worker.ready.connect(files.append)
-        worker.failed.connect(errors.append)
-        with patch.dict(sys.modules, {"pyttsx3": fake_tts}):
-            worker.start()
-            worker.wait(5000)
-            self.application.processEvents()
-
-        self.assertEqual(errors, [])
-        self.assertEqual(len(files), 1)
-        self.assertTrue(Path(files[0]).is_file())
-        Path(files[0]).unlink()
+            self.assertEqual(errors, [])
+            self.assertEqual(len(files), 1)
+            self.assertTrue(Path(files[0]).is_file())
+            Path(files[0]).unlink()
 
     def test_records_transcribes_off_thread_and_releases_microphone(self) -> None:
         streams = []
@@ -138,6 +150,7 @@ class AudioCaptureTests(unittest.TestCase):
         class Stream:
             def __init__(self, **kwargs) -> None:
                 self.callback = kwargs["callback"]
+                self.device = kwargs["device"]
                 self.closed = False
                 streams.append(self)
 
@@ -160,11 +173,15 @@ class AudioCaptureTests(unittest.TestCase):
                 model_results["file_existed"] = self.path.is_file()
                 return iter([types.SimpleNamespace(text=" Olá, Jager ")]), None
 
-        worker = PushToTalkWorker()
+        worker = PushToTalkWorker("0")
         transcripts, errors = [], []
         worker.transcribed.connect(transcripts.append)
         worker.failed.connect(errors.append)
-        with patch.dict(sys.modules, self._audio_modules(Stream, Model)):
+        modules = self._audio_modules(Stream, Model)
+        modules["sounddevice"].query_devices = lambda: [
+            {"name": "Microfone", "max_input_channels": 1}
+        ]
+        with patch.dict(sys.modules, modules):
             worker.start()
             self.assertTrue(started.wait(2))
             worker.stop_recording()
@@ -174,6 +191,7 @@ class AudioCaptureTests(unittest.TestCase):
         self.assertEqual(transcripts, ["Olá, Jager"])
         self.assertEqual(errors, [])
         self.assertTrue(streams[0].closed)
+        self.assertEqual(streams[0].device, 0)
         self.assertNotEqual(model_results["thread_id"], main_thread)
         self.assertTrue(model_results["file_existed"])
 

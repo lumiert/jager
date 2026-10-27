@@ -49,7 +49,7 @@ O botão de microfone implementa PTT: mantenha-o pressionado para gravar e solte
 
 Instalação: `pip install -r requirements.txt`. No Windows, `sounddevice` usa PortAudio e `faster-whisper` usa CTranslate2; a inferência configurada é em CPU, sem exigir CUDA. Os pacotes não garantem que um dispositivo de gravação esteja conectado ou autorizado.
 
-Em **Configurações**, a preferência do dispositivo de saída é persistida e a lista vem dos dispositivos Qt/Windows; se o dispositivo salvo desaparecer, o padrão do sistema é usado temporariamente, sem mudar o padrão global. Ative **Responder por áudio** para usar síntese local `pyttsx3`/SAPI5 no Windows; a reprodução passa por `QAudioOutput` no dispositivo escolhido. A fala progressiva pode ser habilitada separadamente e sintetiza frases conforme chegam. O sistema prefere uma voz portuguesa instalada e usa a voz padrão do Windows se nenhuma estiver disponível. Nenhum áudio de saída é simulado.
+Em **Configurações**, as preferências dos dispositivos de entrada e saída são persistidas; se o dispositivo salvo desaparecer, o padrão do sistema é usado temporariamente, sem mudar o padrão global. Ative **Responder por áudio**, selecione um modelo de voz Piper `.onnx` em português e mantenha o arquivo `.onnx.json` correspondente ao lado dele. A síntese é local com Piper TTS e a reprodução passa por `QAudioOutput` no dispositivo escolhido. Um ícone de parar interrompe a geração ou a reprodução. A fala progressiva pode ser habilitada separadamente e sintetiza frases conforme chegam. Nenhum áudio de saída é simulado.
 
 ## Comandos disponíveis
 
@@ -82,4 +82,4 @@ python -m unittest discover -s tests -v
 
 ## Limitações
 
-Conexão/teste de Telegram, lembretes e agendador, pesquisa web que leia resultados e automação de interface não estão disponíveis. O STT depende de microfone/permissões e baixa o modelo Whisper no primeiro uso. O TTS depende de uma voz instalada e de um backend Qt Multimedia disponível. O Vault integra arquivos Markdown diretamente, mas não sincroniza nem inicia o aplicativo Obsidian.
+Conexão/teste de Telegram, lembretes e agendador, pesquisa web que leia resultados e automação de interface não estão disponíveis. O STT depende de microfone/permissões e baixa o modelo Whisper no primeiro uso. O TTS depende do pacote Piper, de um modelo Piper configurado e de um backend Qt Multimedia disponível. O Vault integra arquivos Markdown diretamente, mas não sincroniza nem inicia o aplicativo Obsidian.

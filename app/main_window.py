@@ -38,13 +38,18 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSpinBox,
     QTextBrowser,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ai.ollama_client import OllamaClient
 from app.audio import PushToTalkWorker
-from app.audio_devices import apply_output_device, output_identifier
+from app.audio_devices import (
+    apply_output_device,
+    input_devices,
+    output_identifier,
+)
 from app.markdown_view import render_markdown
 from app.theme import THEME
 from app.tts import SpeechSynthesisWorker
@@ -298,11 +303,20 @@ class MainWindow(QMainWindow):
         self._telegram_token_field: QLineEdit | None = None
         self._active_audio_combo: QComboBox | None = None
         self._active_audio_status: QLabel | None = None
+        self._active_input_audio_combo: QComboBox | None = None
+        self._active_input_audio_status: QLabel | None = None
         self._speech_supported = False
         self._speech_worker: SpeechSynthesisWorker | None = None
         self._speech_queue: list[str] = []
         self._speech_buffer = ""
         self._speech_current_path: str | None = None
+        self._speech_stop_button = QToolButton(self)
+        self._speech_stop_button.setIcon(self._icon("fa5s.stop"))
+        self._speech_stop_button.setToolTip("Interromper resposta de áudio")
+        self._speech_stop_button.setAccessibleName("Interromper resposta de áudio")
+        self._speech_stop_button.clicked.connect(self._stop_speech)
+        self._speech_stop_button.hide()
+        self.statusBar().addPermanentWidget(self._speech_stop_button)
         self._ptt_timeout = QTimer(self)
         self._ptt_timeout.setSingleShot(True)
         self._ptt_timeout.setInterval(60000)
@@ -318,6 +332,7 @@ class MainWindow(QMainWindow):
 
             self.media_devices = QMediaDevices(self)
             self.media_devices.audioOutputsChanged.connect(self._audio_outputs_changed)
+            self.media_devices.audioInputsChanged.connect(self._audio_outputs_changed)
             self._tts_output = QAudioOutput(self)
             self._tts_player = QMediaPlayer(self)
             self._tts_player.setAudioOutput(self._tts_output)
@@ -802,7 +817,7 @@ class MainWindow(QMainWindow):
             return
         self._ptt_error_reset.stop()
         self._stop_speech()
-        worker = PushToTalkWorker()
+        worker = PushToTalkWorker(self.settings.get("audio_input_id"))
         worker.state_changed.connect(self._set_mic_state)
         worker.transcribed.connect(self._ptt_transcribed)
         worker.failed.connect(self._ptt_failed)
@@ -959,8 +974,12 @@ class MainWindow(QMainWindow):
             or not self._speech_queue
         ):
             return
+        self._speech_stop_button.show()
         self.statusBar().showMessage("Gerando resposta de áudio…")
-        worker = SpeechSynthesisWorker(self._speech_queue.pop(0))
+        worker = SpeechSynthesisWorker(
+            self._speech_queue.pop(0),
+            self.settings.get("piper_model_path"),
+        )
         worker.ready.connect(self._speech_ready)
         worker.failed.connect(self._speech_failed)
         worker.finished.connect(self._speech_worker_finished)
@@ -982,16 +1001,25 @@ class MainWindow(QMainWindow):
             self.settings.get("audio_output_id"),
         )
         self._speech_current_path = path
+        self.statusBar().showMessage("Reproduzindo resposta de áudio…")
         self._tts_player.setSource(QUrl.fromLocalFile(path))
         self._tts_player.play()
 
     def _speech_failed(self, message: str) -> None:
+        self._speech_stop_button.hide()
         self.statusBar().showMessage(message, 6000)
 
     def _speech_worker_finished(self) -> None:
         if self.sender() is self._speech_worker:
             self._speech_worker = None
         self._start_next_speech()
+        if (
+            self._speech_worker is None
+            and self._speech_current_path is None
+            and not self._speech_queue
+        ):
+            self._speech_stop_button.hide()
+            self._clear_speech_status()
 
     def _speech_media_status_changed(self, status) -> None:
         from PySide6.QtMultimedia import QMediaPlayer
@@ -1010,6 +1038,13 @@ class MainWindow(QMainWindow):
             Path(self._speech_current_path).unlink(missing_ok=True)
             self._speech_current_path = None
         self._start_next_speech()
+        if (
+            self._speech_current_path is None
+            and self._speech_worker is None
+            and not self._speech_queue
+        ):
+            self._speech_stop_button.hide()
+            self._clear_speech_status()
 
     def _stop_speech(self) -> None:
         self._speech_queue.clear()
@@ -1022,6 +1057,14 @@ class MainWindow(QMainWindow):
         if self._speech_current_path is not None:
             Path(self._speech_current_path).unlink(missing_ok=True)
             self._speech_current_path = None
+        self._speech_stop_button.hide()
+        self._clear_speech_status()
+
+    def _clear_speech_status(self) -> None:
+        if self.statusBar().currentMessage().startswith(
+            ("Gerando resposta de áudio", "Reproduzindo resposta de áudio")
+        ):
+            self.statusBar().clearMessage()
 
     def refresh_models(self) -> None:
         if self._probe_worker is not None:
@@ -1158,7 +1201,7 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.installEventFilter(self)
         dialog.setWindowTitle("Configurações")
-        dialog.resize(560, 600)
+        dialog.resize(600, 780)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Endereço do Ollama"))
         ollama_url = QLineEdit(self.settings.ollama_url)
@@ -1178,6 +1221,34 @@ class MainWindow(QMainWindow):
         )
         audio_row.addWidget(refresh_audio)
         layout.addLayout(audio_row)
+        layout.addWidget(QLabel("Dispositivo de entrada de áudio"))
+        input_audio_row = QHBoxLayout()
+        audio_input = QComboBox()
+        audio_input.setMinimumWidth(280)
+        audio_input.setAccessibleName("Dispositivo de entrada de áudio")
+        input_audio_row.addWidget(audio_input, 1)
+        refresh_input_audio = QPushButton(self._icon("fa5s.sync-alt"), " Atualizar")
+        refresh_input_audio.clicked.connect(
+            lambda: self._populate_audio_inputs(
+                audio_input, audio_input.currentData()
+            )
+        )
+        input_audio_row.addWidget(refresh_input_audio)
+        layout.addLayout(input_audio_row)
+        input_audio_notice = QLabel(
+            "A entrada escolhida será usada para gravar a fala; a captura usa PortAudio."
+        )
+        input_audio_notice.setObjectName("muted")
+        input_audio_notice.setWordWrap(True)
+        layout.addWidget(input_audio_notice)
+        self._active_input_audio_combo = audio_input
+        self._active_input_audio_status = QLabel("")
+        self._active_input_audio_status.setObjectName("muted")
+        self._active_input_audio_status.setWordWrap(True)
+        layout.addWidget(self._active_input_audio_status)
+        self._populate_audio_inputs(
+            audio_input, self.settings.get("audio_input_id")
+        )
         audio_notice = QLabel(
             "A saída escolhida será usada pelo TTS local, sem alterar o dispositivo padrão do Windows."
         )
@@ -1192,6 +1263,27 @@ class MainWindow(QMainWindow):
         self._active_audio_status = self._audio_settings_status
         self._populate_audio_outputs(audio_output, self.settings.get("audio_output_id"))
         self._telegram_dialog = dialog
+
+        layout.addWidget(QLabel("Modelo de voz Piper (.onnx)"))
+        piper_model_row = QHBoxLayout()
+        piper_model = QLineEdit(self.settings.get("piper_model_path"))
+        piper_model.setPlaceholderText("Selecione um modelo Piper em português")
+        piper_model.setAccessibleName("Modelo de voz Piper")
+        piper_model_row.addWidget(piper_model, 1)
+        browse_piper_model = QPushButton(
+            self._icon("fa5s.folder-open"), " Selecionar modelo"
+        )
+        browse_piper_model.clicked.connect(
+            lambda: self._choose_piper_model(piper_model)
+        )
+        piper_model_row.addWidget(browse_piper_model)
+        layout.addLayout(piper_model_row)
+        piper_notice = QLabel(
+            "Use um modelo Piper .onnx com o arquivo .onnx.json correspondente na mesma pasta."
+        )
+        piper_notice.setObjectName("muted")
+        piper_notice.setWordWrap(True)
+        layout.addWidget(piper_notice)
 
         layout.addWidget(QLabel("Diretório do Vault do Obsidian"))
         path_row = QHBoxLayout()
@@ -1304,6 +1396,12 @@ class MainWindow(QMainWindow):
             if chosen_path:
                 Vault(chosen_path)
             selected_audio_id = audio_output.currentData()
+            selected_input_audio_id = audio_input.currentData()
+            selected_piper_model = piper_model.text().strip()
+            if selected_piper_model and not Path(selected_piper_model).is_file():
+                raise ValueError("O arquivo do modelo Piper não foi encontrado.")
+            if selected_piper_model and not selected_piper_model.lower().endswith(".onnx"):
+                raise ValueError("O modelo de voz Piper deve ser um arquivo .onnx.")
             entered_token = telegram_token.text().strip()
             if entered_token:
                 if not re.fullmatch(r"\d{5,12}:[A-Za-z0-9_-]{20,128}", entered_token):
@@ -1320,6 +1418,9 @@ class MainWindow(QMainWindow):
             self.settings.set("tool_iteration_limit", str(tool_iterations.value()))
             if isinstance(selected_audio_id, str):
                 self.settings.set("audio_output_id", selected_audio_id)
+            if isinstance(selected_input_audio_id, str):
+                self.settings.set("audio_input_id", selected_input_audio_id)
+            self.settings.set("piper_model_path", selected_piper_model)
         except ValueError as error:
             QMessageBox.warning(self, "Configuração inválida", str(error))
             return
@@ -1333,12 +1434,77 @@ class MainWindow(QMainWindow):
         combo = getattr(self, "_active_audio_combo", None)
         if combo is not None and self._active_audio_status is not None:
             self._populate_audio_outputs(combo, combo.currentData())
+        input_combo = getattr(self, "_active_input_audio_combo", None)
+        if input_combo is not None and self._active_input_audio_status is not None:
+            self._populate_audio_inputs(input_combo, input_combo.currentData())
 
     def _settings_dialog_finished(self, _result: int) -> None:
         self._active_audio_combo = None
         self._active_audio_status = None
+        self._active_input_audio_combo = None
+        self._active_input_audio_status = None
         self._telegram_dialog = None
         self._telegram_token_field = None
+
+    def _populate_audio_inputs(
+        self, combo: QComboBox, selected_id: str | None
+    ) -> None:
+        saved_id = selected_id or "default"
+        try:
+            import sounddevice as sd
+        except ImportError:
+            available = []
+            unavailable_message = (
+                "A lista de microfones não está disponível; a entrada padrão será usada."
+            )
+        else:
+            try:
+                available = input_devices(sd)
+                unavailable_message = ""
+            except sd.PortAudioError as error:
+                logger.warning(
+                    "Falha ao enumerar dispositivos de entrada: %s",
+                    type(error).__name__,
+                )
+                available = []
+                unavailable_message = (
+                    "Não foi possível enumerar os microfones; a entrada padrão será usada."
+                )
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Padrão do sistema", "default")
+        for identifier, description in available:
+            combo.addItem(description, identifier)
+        available_ids = {identifier for identifier, _description in available}
+        if saved_id != "default" and saved_id not in available_ids:
+            combo.addItem(f"Indisponível: {saved_id}", saved_id)
+            unavailable_message = (
+                "O dispositivo salvo não está disponível. A entrada padrão será usada temporariamente."
+            )
+        index = combo.findData(saved_id)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+        status = getattr(self, "_active_input_audio_status", None)
+        if status is not None:
+            status.setText(
+                unavailable_message
+                or (
+                    "Nenhum microfone foi encontrado; a entrada padrão será usada."
+                    if not available
+                    else ""
+                )
+            )
+
+    @staticmethod
+    def _choose_piper_model(field: QLineEdit) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            field.window(),
+            "Selecionar modelo de voz Piper",
+            field.text(),
+            "Modelos Piper (*.onnx)",
+        )
+        if path:
+            field.setText(path)
 
     def _populate_audio_outputs(self, combo: QComboBox, selected_id: str | None) -> None:
         saved_id = selected_id or "default"

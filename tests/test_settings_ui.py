@@ -124,6 +124,19 @@ class SettingsAndVisualTests(unittest.TestCase):
         self.assertEqual(queued, ["Uma frase.", "Próxima"])
         self.assertEqual(self.window._speech_buffer, "")
 
+    def test_speech_status_and_stop_control_clear_after_playback_finishes(self) -> None:
+        self.window._speech_current_path = None
+        self.window._speech_queue.clear()
+        self.window._speech_worker = None
+        self.window.statusBar().showMessage("Reproduzindo resposta de áudio…")
+        self.window._speech_stop_button.show()
+
+        self.window._finish_speech_file()
+        self.application.processEvents()
+
+        self.assertEqual(self.window.statusBar().currentMessage(), "")
+        self.assertFalse(self.window._speech_stop_button.isVisible())
+
 
 if __name__ == "__main__":
     unittest.main()
