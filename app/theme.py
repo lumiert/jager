@@ -24,7 +24,7 @@ QTextBrowser {
     border: none;
     padding: 20px;
 }
-QLineEdit, QComboBox {
+QLineEdit, QComboBox, QPlainTextEdit {
     background-color: #121E33;
     border: 1px solid #24334D;
     border-radius: 5px;
@@ -48,6 +48,31 @@ QPushButton#primary {
 }
 QPushButton#primary:hover {
     background-color: #3B82F6;
+}
+QPushButton:disabled, QComboBox:disabled {
+    color: #64748B;
+}
+QListWidget {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+QListWidget::item {
+    border-radius: 4px;
+    padding: 8px;
+}
+QListWidget::item:selected {
+    background-color: #1A2A45;
+    color: #E8EEF8;
+}
+QProgressBar {
+    background-color: #1A2A45;
+    border: none;
+    border-radius: 4px;
+}
+QProgressBar::chunk {
+    background-color: #3B82F6;
+    border-radius: 4px;
 }
 QScrollBar:vertical {
     background: #080D18;

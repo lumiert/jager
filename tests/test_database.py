@@ -38,6 +38,43 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.database.create_note("  ")
 
+    def test_conversation_titles_and_manual_title_precedence(self) -> None:
+        conversation_id = self.database.create_conversation()
+        self.assertEqual(self.database.conversation(conversation_id)["title"], "Nova conversa")
+        self.assertTrue(self.database.set_automatic_title(conversation_id, "Ideias de projeto"))
+        self.database.set_conversation_title(conversation_id, "Meu título")
+        self.assertFalse(self.database.set_automatic_title(conversation_id, "Outro título"))
+        self.assertEqual(self.database.conversation(conversation_id)["title"], "Meu título")
+
+    def test_deleting_conversation_removes_only_its_messages(self) -> None:
+        first = self.database.create_conversation()
+        second = self.database.create_conversation()
+        self.database.add_message(first, "user", "apagar")
+        self.database.add_message(second, "user", "manter")
+
+        self.assertTrue(self.database.delete_conversation(first))
+        self.assertIsNone(self.database.conversation(first))
+        self.assertEqual(self.database.conversation_messages(second)[0]["content"], "manter")
+
+    def test_old_conversation_schema_is_migrated(self) -> None:
+        path = Path(self.directory.name) / "old.sqlite3"
+        import sqlite3
+
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "CREATE TABLE conversations (id INTEGER PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO conversations(title, created_at) VALUES ('Título antigo', 'ontem')"
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = Database(path)
+        self.assertEqual(migrated.conversation(1)["title"], "Título antigo")
+        self.assertEqual(migrated.conversation(1)["title_manual"], 0)
+        migrated.close()
+
 
 if __name__ == "__main__":
     unittest.main()

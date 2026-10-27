@@ -21,6 +21,8 @@ class Settings:
     DEFAULTS = {
         "ollama_url": "http://localhost:11434",
         "ollama_model": "qwen3:1.7b",
+        "vault_path": "",
+        "streaming_audio": "false",
     }
 
     def __init__(self, database: Database) -> None:

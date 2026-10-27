@@ -39,6 +39,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS conversations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL DEFAULT 'Nova conversa',
+                    title_manual INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS messages (
@@ -63,9 +64,18 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-                PRAGMA user_version = 1;
                 """
             )
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(conversations)")
+            }
+            if "title_manual" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN title_manual "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            self._connection.execute("PRAGMA user_version = 2")
 
     def create_conversation(self, title: str = "Nova conversa") -> int:
         with self._lock, self._connection:
@@ -81,6 +91,60 @@ class Database:
                 "SELECT id, title, created_at FROM conversations ORDER BY id DESC"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def conversation(self, conversation_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT id, title, title_manual FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def has_messages(self, conversation_id: int) -> bool:
+        with self._lock:
+            return self._connection.execute(
+                "SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1",
+                (conversation_id,),
+            ).fetchone() is not None
+
+    def set_conversation_title(self, conversation_id: int, title: str) -> None:
+        title = title.strip()
+        if not title:
+            raise ValueError("O título não pode ficar vazio.")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE conversations SET title = ?, title_manual = 1 WHERE id = ?",
+                (title, conversation_id),
+            )
+            if not cursor.rowcount:
+                raise ValueError("A conversa não existe mais.")
+
+    def set_automatic_title(self, conversation_id: int, title: str) -> bool:
+        title = title.strip()
+        if not title:
+            return False
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE conversations SET title = ? "
+                "WHERE id = ? AND title_manual = 0 AND title = 'Nova conversa'",
+                (title, conversation_id),
+            )
+            return cursor.rowcount > 0
+
+    def delete_conversation(self, conversation_id: int) -> bool:
+        with self._lock, self._connection:
+            exists = self._connection.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if not exists:
+                return False
+            self._connection.execute(
+                "DELETE FROM messages WHERE conversation_id = ?", (conversation_id,)
+            )
+            self._connection.execute(
+                "DELETE FROM conversations WHERE id = ?", (conversation_id,)
+            )
+            return True
 
     def latest_conversation(self) -> int:
         with self._lock, self._connection:
