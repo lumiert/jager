@@ -628,6 +628,7 @@ class MainWindow(QMainWindow):
             )
         if cursor.isNull() or not expected_anchor:
             return
+        cursor.setPosition(cursor.selectionStart())
         line = self.chat.cursorRect(cursor)
         self.response_status.adjustSize()
         width = self.response_status.sizeHint().width()

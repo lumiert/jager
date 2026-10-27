@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 from ai.ollama_client import OllamaClient, OllamaError
@@ -30,6 +31,23 @@ SYSTEM_PROMPT = (
     "navegador (open_url) não lê seu conteúdo: use web_fetch para ler e web_search para "
     "pesquisar."
 )
+
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+def load_tool_prompts() -> str:
+    """Concatenate the segmented prompt files (checklists + one per tool)."""
+    parts: list[str] = []
+    files = [_PROMPTS_DIR / "checklists.md", *sorted((_PROMPTS_DIR / "tools").glob("*.md"))]
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
 
 _SUGGESTION = re.compile(r"sugest|ideia|invente|exemplo|\bsugira|recomend", re.IGNORECASE)
 _CHECKBOX = re.compile(r"^\s*[-*+]\s*\[[ xX]\]\s*(.+?)\s*$")
@@ -137,6 +155,8 @@ class Assistant:
             SYSTEM_PROMPT
             + "\nFerramentas disponíveis (somente estas): "
             + self.tools.descriptions()
+            + "\nGuia de uso das ferramentas:\n"
+            + load_tool_prompts()
             + "\nPesquise o Vault quando notas forem relevantes. "
             "Se o modelo não aceitar chamadas de ferramenta, solicite uma ação com um único "
             'objeto JSON exato: {"tool":"nome","arguments":{...}}. Depois dos resultados, '
