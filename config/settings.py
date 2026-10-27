@@ -24,7 +24,9 @@ class Settings:
         "vault_path": "",
         "streaming_audio": "false",
         "audio_output_id": "default",
+        "audio_input_id": "default",
         "voice_response_enabled": "false",
+        "piper_model_path": "",
         "tool_iteration_limit": "4",
     }
 

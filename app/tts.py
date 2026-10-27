@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import threading
+import wave
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -15,9 +16,10 @@ class SpeechSynthesisWorker(QThread):
     ready = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, model_path: str) -> None:
         super().__init__()
         self.text = text.strip()
+        self.model_path = model_path.strip()
         self._cancelled = threading.Event()
         self._temporary_path: Path | None = None
 
@@ -32,48 +34,43 @@ class SpeechSynthesisWorker(QThread):
         try:
             if not self.text:
                 raise RuntimeError("Não há texto para transformar em fala.")
+            if not self.model_path:
+                raise RuntimeError(
+                    "Selecione um modelo de voz Piper nas configurações."
+                )
+            model_path = Path(self.model_path)
+            if not model_path.is_file():
+                raise RuntimeError("O arquivo do modelo Piper não foi encontrado.")
+            if not Path(f"{model_path}.json").is_file():
+                raise RuntimeError(
+                    "O arquivo .onnx.json do modelo Piper não foi encontrado."
+                )
             try:
-                import pyttsx3
+                from piper import PiperVoice
             except ImportError as error:
-                raise RuntimeError("O mecanismo de voz local não está instalado.") from error
+                raise RuntimeError("O Piper TTS não está instalado.") from error
 
             descriptor, path = tempfile.mkstemp(suffix=".wav")
             os.close(descriptor)
             self._temporary_path = Path(path)
-            self._temporary_path.unlink()
-            engine = pyttsx3.init(driverName="sapi5" if os.name == "nt" else None)
-            self._select_portuguese_voice(engine)
-            engine.save_to_file(self.text, str(self._temporary_path))
-            engine.runAndWait()
+            voice = PiperVoice.load(str(model_path))
+            with wave.open(str(self._temporary_path), "wb") as audio_file:
+                voice.synthesize_wav(self.text, audio_file)
             if self._cancelled.is_set():
                 return
             if not self._temporary_path.is_file() or self._temporary_path.stat().st_size <= 44:
-                raise RuntimeError("O mecanismo de voz não gerou áudio reproduzível.")
+                raise RuntimeError("O Piper não gerou áudio reproduzível.")
             self.ready.emit(str(self._temporary_path))
             self._temporary_path = None
         except Exception as error:
             if not self._cancelled.is_set():
-                logger.warning("Falha na síntese local de fala: %s", type(error).__name__)
-                self.failed.emit("Não foi possível gerar a resposta de áudio.")
+                logger.warning("Falha na síntese Piper: %s", type(error).__name__)
+                message = (
+                    str(error)
+                    if isinstance(error, RuntimeError)
+                    else "Não foi possível gerar a resposta de áudio."
+                )
+                self.failed.emit(message)
         finally:
-            if engine is not None:
-                try:
-                    engine.stop()
-                except Exception:
-                    logger.exception("Falha ao encerrar o mecanismo de voz")
             if self._temporary_path is not None:
                 self._temporary_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def _select_portuguese_voice(engine) -> None:
-        for voice in engine.getProperty("voices"):
-            metadata = " ".join(
-                [
-                    str(getattr(voice, "id", "")),
-                    str(getattr(voice, "name", "")),
-                    *(str(language) for language in getattr(voice, "languages", [])),
-                ]
-            ).casefold()
-            if "pt" in metadata or "portugu" in metadata:
-                engine.setProperty("voice", voice.id)
-                return

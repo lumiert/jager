@@ -18,8 +18,9 @@ class PushToTalkWorker(QThread):
     transcribed = Signal(str)
     failed = Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, input_device_id: str = "default") -> None:
         super().__init__()
+        self.input_device_id = input_device_id
         self._stop_requested = threading.Event()
         self._cancel_requested = threading.Event()
         self._lock = threading.Lock()
@@ -39,6 +40,7 @@ class PushToTalkWorker(QThread):
         try:
             try:
                 import sounddevice as sd
+                from app.audio_devices import resolve_input_device
             except ImportError as error:
                 raise RuntimeError(
                     "Captura de áudio indisponível. Instale as dependências do Jager."
@@ -59,6 +61,7 @@ class PushToTalkWorker(QThread):
                     channels=1,
                     dtype="int16",
                     callback=receive,
+                    device=resolve_input_device(sd, self.input_device_id),
                 )
                 with self._lock:
                     self._stream = stream
