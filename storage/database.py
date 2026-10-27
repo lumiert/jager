@@ -60,6 +60,17 @@ class Database:
                     completed INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS tool_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    policy TEXT NOT NULL,
+                    authorization TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -215,6 +226,31 @@ class Database:
                 (task_id,),
             )
             return cursor.rowcount > 0
+
+    def add_tool_audit(
+        self,
+        tool: str,
+        policy: str,
+        authorization: str,
+        status: str,
+        duration_ms: int,
+        summary: str,
+        error: str = "",
+    ) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO tool_audit(created_at, tool, policy, authorization, "
+                "status, duration_ms, summary, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (_timestamp(), tool, policy, authorization, status, duration_ms,
+                 summary[:600], error[:300]),
+            )
+
+    def list_tool_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM tool_audit ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self._lock:

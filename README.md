@@ -45,7 +45,7 @@ Quando um caminho estiver configurado, o assistente pode pesquisar notas relevan
 
 As respostas são lidas progressivamente do endpoint de streaming `/api/chat` do Ollama e atualizadas pela thread principal da interface. **Interromper geração** interrompe a leitura do stream; o texto recebido é mantido quando disponível. A conversa registra uma única resposta final.
 
-O botão de microfone implementa PTT: mantenha-o pressionado para gravar e solte para transcrever. A captura usa `sounddevice`/PortAudio em uma thread e o STT local usa `faster-whisper` no modelo `tiny`, em CPU/int8, com idioma português. O modelo Whisper é baixado pelo CTranslate2 no primeiro uso; esse download inicial requer acesso à internet. Áudio temporário fica em arquivo WAV no diretório temporário do sistema e é removido após o reconhecimento. Escape, perda de foco da janela, minimização e fechamento cancelam a gravação; há também um limite de 60 segundos. É necessário conectar um microfone e conceder permissão ao aplicativo.
+O botão de microfone alterna a gravação: o primeiro clique inicia (botão vermelho com ícone de stop branco), o segundo encerra e transcreve. A transcrição é inserida no campo de texto, **sem envio automático**; texto já digitado é preservado (a transcrição é acrescentada ao final). Transcrição vazia ou falha não insere nada. Escape, minimização e fechamento cancelam a gravação; há limite de 120 segundos. A captura usa `sounddevice`/PortAudio em uma thread e o STT local usa `faster-whisper` (`tiny`, CPU/int8, português). O modelo é carregado sob demanda, uma vez por processo, primeiro somente do cache local (`local_files_only`), sem consultar o Hugging Face; só se o cache faltar ou estiver incompleto ele é baixado (na thread do worker, com estado “baixando modelo”), sem exigir `HF_TOKEN`. Sem Developer Mode no Windows o cache do Hugging Face usa cópias em vez de symlinks: funciona sem administrador (apenas ocupa mais disco), então o aviso informativo é suprimido via `HF_HUB_DISABLE_SYMLINKS_WARNING` e não é falha. O áudio temporário é removido após o reconhecimento.
 
 Instalação: `pip install -r requirements.txt`. No Windows, `sounddevice` usa PortAudio e `faster-whisper` usa CTranslate2; a inferência configurada é em CPU, sem exigir CUDA. Os pacotes não garantem que um dispositivo de gravação esteja conectado ou autorizado.
 
@@ -64,9 +64,28 @@ Em **Configurações**, as preferências dos dispositivos de entrada e saída s�
 
 Tarefas são tratadas localmente; novas notas são criadas no Vault configurado. Registros antigos de notas no banco de dados são preservados. Abertura de aplicativos usa apenas nomes permitidos e não executa comandos fornecidos pelo modelo ou pelo usuário. Os caminhos de pastas disponíveis correspondem a pastas conhecidas dentro do perfil do usuário.
 
-A pesquisa abre os termos no navegador padrão; ela não lê resultados nem os envia ao modelo.
+`open_url` abre uma página no navegador padrão sem ler seu conteúdo. Para recuperar conteúdo e resultados para o modelo, use `web_fetch` e `web_search`.
 
-O Ollama recebe a lista JSON Schema das ferramentas realmente registradas. Chamadas estruturadas são validadas e executadas pela aplicação; modelos sem suporte a ferramentas usam apenas um envelope JSON estrito, nunca comandos de terminal. Pastas de leitura são limitadas a Downloads, Documentos, Área de trabalho e Vault; criações no Vault e ações externas pedem confirmação. A pesquisa web com resultados não está disponível. O ciclo de ferramentas tem limite de quatro iterações (ajustável pela preferência local `tool_iteration_limit`, limitado a 1–8).
+## Ferramentas, permissões e ciclo do agente
+
+Todas as ferramentas ficam em `tools/registry.py`, que é o **único** caminho de execução (validação de argumentos → política de permissão → execução → verificação → auditoria na tabela `tool_audit` e no log). O Ollama só recebe as ferramentas realmente disponíveis. Resultados voltam ao modelo como mensagens `tool` estruturadas (`ok`, `status`, `result`/`error`), permitindo encadear chamadas; status possíveis: `completed`, `failed`, `denied`, `invalid`, `unavailable`, `timeout`, `cancelled`.
+
+- **Arquivos** (`list_files`, `search_files`, `read_text_file`, `file_info`, `create_folder`, `create_file`, `edit_file`, `move_path`): sistema de arquivos real, restrito a Downloads, Documentos, Área de trabalho e Vault; sem path traversal nem symlinks; nunca sobrescreve nem move sobre algo existente; escritas são relidas para verificação; repetir uma operação já concluída é idempotente. **Não há ferramenta de exclusão** (não existe política segura para ela).
+- **Internet** (`web_search`, `web_fetch`, `open_url`): `web_search` usa a página HTML pública do DuckDuckGo (sem chave; pode limitar ou mudar de formato — nesse caso informa a falha). `web_fetch` retorna o texto real da página (HTTP/HTTPS, 1 MiB, 25 s, somente conteúdo textual). Cada destino é validado após a resolução DNS e em cada redirecionamento (bloqueia loopback, redes privadas, link-local e metadados; conecta ao IP validado). Não contorna login ou paywall. `open_url` só abre o navegador e informa `content_read: false`. Todo conteúdo da web é dado não confiável.
+- **Terminal** (`run_terminal_command`): PowerShell no Windows (`pwsh`/`sh` em outros sistemas), fora da thread principal, com diretório de trabalho, timeout (padrão 60 s, máx. 600 s), cancelamento, encerramento da árvore de processos, stdout/stderr/código de saída/duração e saída limitada com aviso de truncamento. Elevação de privilégios (sudo, runas, `-Verb RunAs`) é sempre recusada e comandos de alto impacto exigem confirmação mesmo com “Permitir sempre”. Segredos óbvios são mascarados.
+- **Obsidian e tarefas**: `create_vault_note` usa o nome e o texto literais do pedido, na raiz do Vault por padrão, nunca sobrescreve (nota idêntica já existente conta como já concluída) e confirma a gravação relendo o arquivo. Itens `- [ ]` que o usuário não pediu são rejeitados, salvo se ele pedir sugestões. O pedido “crie um checklist … chamado X.md … tarefa pendente: Y” é tratado de forma determinística e gera `# X`, `## Checklist Diário`, `- [ ] Y`.
+
+**Permissões** (Configurações → aba *Permissões*): cada ferramenta tem sua própria política, *Perguntar sempre* (padrão; ausente ou inválida também resulta nisso) ou *Permitir sempre*, aplicada no ponto de execução do registro. Não há opção global, e nenhuma ferramenta altera permissões. Ferramentas indisponíveis (ex.: Vault sem configuração) aparecem marcadas.
+
+**Limites do ciclo**: máximo de chamadas por resposta (1–20) e duração total do ciclo são configuráveis; chamadas idênticas reutilizam o resultado anterior e uma terceira repetição aborta o ciclo por falta de progresso. Se o Ollama falhar depois de ações com efeito colateral, as ações já concluídas são informadas e não são repetidas.
+
+## Timeouts do Ollama (investigação)
+
+No log original, a falha ocorreu 60 s depois de `create_vault_note`. O cliente antigo usava `urlopen(timeout=60)`, e esse prazo vale até o primeiro byte da resposta; a chamada seguinte à ferramenta (reavaliação do prompt, possivelmente com carga do modelo) é compatível com essa espera, mas **a causa raiz não foi confirmada**: não há medições do Ollama, e a geração concorrente do título e o carregamento do Whisper são hipóteses não comprovadas. O Whisper não foi apontado como causa. Mudanças: timeouts separados e configuráveis — conexão (10 s), início da resposta (300 s), inatividade do stream (120 s) e duração total (1800 s) — aplicados por um watchdog que fecha o socket; um stream saudável nunca é cortado pelo limite de inatividade. Erros distintos para conexão, timeout (por fase), HTTP e cancelamento (silencioso, não é falha de rede). Mensagens curtas na interface; logs com modelo, etapa, duração, tempo até o primeiro byte e tipo de erro. O título da conversa agora é gerado só depois da resposta, para não competir pelo modelo.
+
+## Indicador de carregamento
+
+Durante a geração aparece apenas uma roda giratória (sem texto nem porcentagem), que para e some ao fim, erro ou cancelamento.
 
 ## Telegram
 
@@ -82,4 +101,4 @@ python -m unittest discover -s tests -v
 
 ## Limitações
 
-Conexão/teste de Telegram, lembretes e agendador, pesquisa web que leia resultados e automação de interface não estão disponíveis. O STT depende de microfone/permissões e baixa o modelo Whisper no primeiro uso. O TTS depende do pacote Piper, de um modelo Piper configurado e de um backend Qt Multimedia disponível. O Vault integra arquivos Markdown diretamente, mas não sincroniza nem inicia o aplicativo Obsidian.
+Conexão/teste de Telegram, lembretes e agendador, automação de interface não estão disponíveis. O STT depende de microfone/permissões e baixa o modelo Whisper apenas se ele não estiver em cache. O TTS depende do pacote Piper, de um modelo Piper configurado e de um backend Qt Multimedia disponível. O Vault integra arquivos Markdown diretamente, mas não sincroniza nem inicia o aplicativo Obsidian.

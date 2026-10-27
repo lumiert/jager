@@ -19,6 +19,10 @@ QLabel#brand {
     font-size: 19pt;
     font-weight: 700;
 }
+QLabel#fieldTitle {
+    font-weight: 600;
+    margin-top: 6px;
+}
 QLabel#subtitle, QLabel#muted {
     color: #94A3B8;
 }
@@ -68,14 +72,10 @@ QListWidget::item:selected {
     border-left: 2px solid #60A5FA;
     color: #E8EEF8;
 }
-QProgressBar {
-    background-color: #1A2A45;
-    border: none;
-    border-radius: 4px;
-}
-QProgressBar::chunk {
-    background-color: #3B82F6;
-    border-radius: 4px;
+QPushButton[pttState="recording"], QPushButton[pttState="recording"]:hover {
+    background-color: #DC2626;
+    border-color: #EF4444;
+    color: #FFFFFF;
 }
 QScrollBar:vertical {
     background: #080D18;

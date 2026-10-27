@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ai.ollama_client import OllamaError
+from ai.ollama_client import OllamaHTTPError
+from tools.permissions import ALLOW, ASK
 from config.settings import Settings
 from core.assistant import Assistant
 from storage.database import Database
@@ -22,6 +23,8 @@ class ToolRegistryTests(unittest.TestCase):
         self.settings = Settings(self.database)
         self.settings.set("vault_path", str(self.vault))
         self.registry = ToolRegistry(self.database, self.settings)
+        for entry in self.registry.entries():
+            self.registry.permissions.set_policy(entry["id"], ALLOW)
 
     def tearDown(self) -> None:
         self.database.close()
@@ -34,7 +37,8 @@ class ToolRegistryTests(unittest.TestCase):
 
         self.assertIn("system_info", names)
         self.assertIn("create_vault_note", names)
-        self.assertNotIn("web_search", names)
+        self.assertIn("web_search", names)
+        self.assertNotIn("delete_file", names)
         self.assertTrue(all(item["function"]["parameters"]["type"] == "object" for item in definitions))
         self.assertIn(str(self.vault.resolve()), descriptions["authorized_directories"])
         system_info = next(
@@ -59,7 +63,6 @@ class ToolRegistryTests(unittest.TestCase):
             self.registry.execute(
                 "open_url",
                 {"url": "https://user:password@example.com"},
-                approved=True,
             )["ok"]
         )
 
@@ -76,19 +79,21 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertFalse(denied["ok"])
 
     def test_high_risk_actions_require_confirmation_and_never_overwrite(self) -> None:
+        self.registry.permissions.set_policy("create_vault_note", ASK)
         self.assertTrue(self.registry.requires_confirmation("create_vault_note"))
         unauthorized = self.registry.execute(
             "create_vault_note", {"name": "nota", "content": "primeira"}
         )
+        yes = lambda _request: True
         first = self.registry.execute(
             "create_vault_note",
             {"name": "nota", "content": "primeira"},
-            approved=True,
+            confirm=yes,
         )
         second = self.registry.execute(
             "create_vault_note",
             {"name": "nota", "content": "sobrescrever"},
-            approved=True,
+            confirm=yes,
         )
 
         self.assertFalse(unauthorized["ok"])
@@ -106,14 +111,15 @@ class ToolRegistryTests(unittest.TestCase):
             "content": "atualizada",
             "expected_hash": version,
         }
+        self.registry.permissions.set_policy("edit_vault_note", ASK)
         denied = self.registry.execute("edit_vault_note", arguments)
         updated = self.registry.execute(
-            "edit_vault_note", arguments, approved=True
+            "edit_vault_note", arguments, confirm=lambda _r: True
         )
         stale = self.registry.execute(
             "edit_vault_note",
             {**arguments, "content": "substituir"},
-            approved=True,
+            confirm=lambda _r: True,
         )
 
         self.assertFalse(denied["ok"])
@@ -177,6 +183,8 @@ class ToolRegistryTests(unittest.TestCase):
         ]
         assistant = Assistant(self.database, ollama, self.settings)
         conversation_id = assistant.new_conversation()
+        self.settings.set("vault_path", str(self.vault))
+        assistant.tools.permissions.set_policy("open_url", ASK)
         confirm = Mock(return_value=False)
         with patch("tools.registry.webbrowser.open") as open_url:
             answer = assistant.respond_stream(
@@ -184,7 +192,7 @@ class ToolRegistryTests(unittest.TestCase):
                 "Abra o site",
                 lambda _fragment: None,
                 threading.Event(),
-                confirm_tool=confirm,
+                confirm=confirm,
             )
 
         confirm.assert_called_once()
@@ -199,7 +207,7 @@ class ToolRegistryTests(unittest.TestCase):
     def test_json_fallback_executes_tools_and_returns_a_final_answer(self) -> None:
         ollama = Mock()
         ollama.chat_stream_events.side_effect = [
-            OllamaError("tools indisponíveis"),
+            OllamaHTTPError("tools indisponíveis", 400),
             iter([{"content": '{"tool":"system_info","arguments":{}}'}]),
             iter([{"content": '{"final":"Sistema consultado."}'}]),
         ]

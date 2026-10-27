@@ -106,7 +106,21 @@ class Vault:
                 temporary_path.unlink()
 
     def create_note(self, relative_path: str, content: str = "") -> None:
-        self.save_note(relative_path, content)
+        """Create a new note; never replaces an existing one, even under a race."""
+        path = self._checked_path(relative_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.resolve(strict=True).is_relative_to(self.root):
+            raise VaultError("O caminho deve permanecer dentro do Vault.")
+        try:
+            with open(path, "x", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except FileExistsError as error:
+            raise VaultError("A nota já existe; ela não foi sobrescrita.") from error
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
 
     def search(
         self,

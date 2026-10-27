@@ -22,6 +22,8 @@ class AssistantTests(unittest.TestCase):
         self.assistant = Assistant(
             self.database, self.ollama, self.settings
         )
+        for entry in self.assistant.tools.entries():
+            self.assistant.tools.permissions.set_policy(entry["id"], "allow")
         self.conversation_id = self.assistant.new_conversation()
 
     def tearDown(self) -> None:
