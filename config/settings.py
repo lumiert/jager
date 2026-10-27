@@ -28,6 +28,21 @@ class Settings:
         "voice_response_enabled": "false",
         "piper_model_path": "",
         "tool_iteration_limit": "4",
+        "tool_cycle_timeout": "600",
+        "ollama_connect_timeout": "10",
+        "ollama_response_timeout": "300",
+        "ollama_idle_timeout": "120",
+        "ollama_total_timeout": "1800",
+    }
+
+    # Allowed range (min, max) for numeric preferences; values outside are clamped.
+    NUMERIC_LIMITS = {
+        "tool_iteration_limit": (1, 20),
+        "tool_cycle_timeout": (10, 7200),
+        "ollama_connect_timeout": (1, 120),
+        "ollama_response_timeout": (10, 3600),
+        "ollama_idle_timeout": (10, 3600),
+        "ollama_total_timeout": (30, 14400),
     }
 
     def __init__(self, database: Database) -> None:
@@ -44,6 +59,14 @@ class Settings:
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise ValueError("A URL do Ollama deve começar com http:// ou https://.")
         self.database.set_setting(key, value)
+
+    def get_number(self, key: str) -> float:
+        low, high = self.NUMERIC_LIMITS[key]
+        try:
+            value = float(self.get(key))
+        except ValueError:
+            value = float(self.DEFAULTS[key])
+        return min(float(high), max(float(low), value))
 
     @property
     def ollama_url(self) -> str:

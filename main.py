@@ -5,7 +5,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from ai.ollama_client import OllamaClient
+from ai.ollama_client import OllamaClient, OllamaTimeouts
 from app.main_window import MainWindow
 from config.settings import Settings, load_local_environment
 from core.assistant import Assistant
@@ -20,7 +20,7 @@ def main() -> int:
     )
     database = Database()
     settings = Settings(database)
-    client = OllamaClient(settings.ollama_url)
+    client = OllamaClient(settings.ollama_url, timeouts=OllamaTimeouts.from_settings(settings))
     assistant = Assistant(database, client, settings)
 
     application = QApplication(sys.argv)

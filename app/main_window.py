@@ -11,6 +11,9 @@ import qtawesome as qta
 from PySide6.QtCore import QEvent, QTimer, Qt, QThread, Signal, QUrl
 from PySide6.QtGui import (
     QCloseEvent,
+    QColor,
+    QPainter,
+    QPen,
     QDesktopServices,
     QKeyEvent,
     QKeySequence,
@@ -35,15 +38,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QProgressBar,
+    QScrollArea,
     QSpinBox,
+    QTabWidget,
     QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ai.ollama_client import OllamaClient
+from ai.ollama_client import OllamaClient, OllamaError, OllamaTimeouts
 from app.audio import PushToTalkWorker
 from app.audio_devices import (
     apply_output_device,
@@ -57,9 +61,51 @@ from config import secure_store
 from config.settings import Settings
 from core.assistant import Assistant
 from storage.database import Database
+from tools.permissions import POLICY_LABELS
 from storage.vault import Vault, VaultError
 
 logger = logging.getLogger(__name__)
+
+
+class SpinnerWidget(QWidget):
+    """Circular indicator; animates only while visible."""
+
+    def __init__(self, size: int = 22, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAccessibleName("Gerando resposta")
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(40)
+        self._timer.timeout.connect(self._advance)
+
+    def isAnimating(self) -> bool:
+        return self._timer.isActive()
+
+    def _advance(self) -> None:
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def showEvent(self, event) -> None:
+        self._timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        margin = 3
+        rect = self.rect().adjusted(margin, margin, -margin, -margin)
+        pen = QPen(QColor("#2A3A55"), 3)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
+        pen = QPen(QColor("#60A5FA"), 3)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(rect, -self._angle * 16, -100 * 16)
 
 
 class Worker(QThread):
@@ -96,8 +142,8 @@ class ChatWorker(QThread):
     def cancel(self) -> None:
         self.cancelled.set()
 
-    def confirm_tool(self, name: str, arguments: dict) -> bool:
-        request = {"name": name, "arguments": arguments, "event": threading.Event()}
+    def confirm_tool(self, details: dict) -> bool:
+        request = {"details": details, "event": threading.Event()}
         self.confirmation_requested.emit(request)
         while not request["event"].wait(0.1):
             if self.cancelled.is_set():
@@ -122,7 +168,12 @@ class ChatWorker(QThread):
             self.succeeded.emit(self.conversation_id, answer)
         except Exception as error:
             logger.exception("Falha durante geração de resposta")
-            self.failed.emit(self.conversation_id, str(error))
+            message = (
+                str(error)
+                if isinstance(error, (OllamaError, ValueError))
+                else "Não foi possível concluir a resposta. Veja os registros para detalhes."
+            )
+            self.failed.emit(self.conversation_id, message)
 
 
 class MessageInput(QPlainTextEdit):
@@ -319,7 +370,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._speech_stop_button)
         self._ptt_timeout = QTimer(self)
         self._ptt_timeout.setSingleShot(True)
-        self._ptt_timeout.setInterval(60000)
+        self._ptt_timeout.setInterval(120000)
         self._ptt_timeout.timeout.connect(self._stop_ptt)
         self._ptt_error_reset = QTimer(self)
         self._ptt_error_reset.setSingleShot(True)
@@ -465,13 +516,7 @@ class MainWindow(QMainWindow):
         self.response_status.setStyleSheet("background: transparent;")
         status_layout = QHBoxLayout(self.response_status)
         status_layout.setContentsMargins(0, 0, 0, 0)
-        self.response_status_label = QLabel("Gerando resposta")
-        self.response_status_label.setStyleSheet("background: transparent; color: #94A3B8;")
-        status_layout.addWidget(self.response_status_label)
-        self.loading_indicator = QProgressBar()
-        self.loading_indicator.setRange(0, 0)
-        self.loading_indicator.setTextVisible(False)
-        self.loading_indicator.setFixedSize(46, 6)
+        self.loading_indicator = SpinnerWidget()
         status_layout.addWidget(self.loading_indicator)
         self.response_status.hide()
         self.chat.verticalScrollBar().valueChanged.connect(self._position_response_status)
@@ -496,13 +541,13 @@ class MainWindow(QMainWindow):
 
         message_row = QHBoxLayout()
         self.microphone_button = QPushButton(self._icon("fa5s.microphone"), "")
-        self.microphone_button.setToolTip("Pressione e segure para falar")
-        self.microphone_button.setAccessibleName("Pressionar e segurar para falar")
+        self.microphone_button.setToolTip("Clique para começar a gravar")
+        self.microphone_button.setAccessibleName("Alternar gravação de voz")
         self.microphone_button.setAccessibleDescription(
-            "Grava somente enquanto pressionado. Solte para transcrever; Escape cancela."
+            "Clique para iniciar a gravação e clique de novo para parar e transcrever. "
+            "O texto é inserido no campo de mensagem sem ser enviado; Escape cancela."
         )
-        self.microphone_button.pressed.connect(self._start_ptt)
-        self.microphone_button.released.connect(self._stop_ptt)
+        self.microphone_button.clicked.connect(self._toggle_ptt)
         self.microphone_button.installEventFilter(self)
         message_row.addWidget(self.microphone_button)
         self.input = MessageInput()
@@ -642,9 +687,8 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._on_error)
         worker.finished.connect(self._chat_worker_finished)
         self._chat_worker = worker
+        self._pending_title = (conversation_id, text) if should_title else None
         worker.start()
-        if should_title:
-            self._start_title_generation(conversation_id, text)
 
     def _start_title_generation(self, conversation_id: int, text: str) -> None:
         worker = Worker(
@@ -738,6 +782,10 @@ class MainWindow(QMainWindow):
 
     def _chat_worker_finished(self) -> None:
         self._chat_worker = None
+        pending, self._pending_title = getattr(self, "_pending_title", None), None
+        if pending:
+            # Titles wait for the chat answer so they never compete for the local model.
+            self._start_title_generation(*pending)
         self._set_busy(False)
         self._render_messages()
 
@@ -753,64 +801,43 @@ class MainWindow(QMainWindow):
         self.response_status.setVisible(busy)
         if busy:
             self.stop_button.setText("")
-            self.response_status_label.setText("Gerando resposta")
             self._position_response_status()
         else:
             self.response_status.hide()
 
     def _set_tool_status(self, status: str) -> None:
-        labels = {
-            "system_info": "consultando o sistema",
-            "list_applications": "consultando aplicativos disponíveis",
-            "open_application": "abrindo aplicativo",
-            "open_folder": "abrindo pasta",
-            "open_url": "abrindo endereço externo",
-            "list_files": "listando arquivos",
-            "read_text_file": "lendo arquivo",
-            "open_file": "abrindo arquivo",
-            "search_files": "pesquisando arquivos",
-            "create_vault_note": "criando nota no Vault",
-            "edit_vault_note": "atualizando nota no Vault",
-            "read_vault_note": "lendo nota do Vault",
-            "list_vault_notes": "consultando notas do Vault",
-            "search_vault_notes": "pesquisando no Vault",
-            "list_tasks": "consultando tarefas",
-            "create_task": "criando tarefa",
-            "integration_status": "consultando integrações",
-        }
-        awaiting_confirmation = status.startswith("Jager solicita autorização para ")
-        name = status.rsplit(" ", 1)[-1].rstrip(".")
-        operation = labels.get(name, "operação do computador")
-        prefix = "Aguardando confirmação: " if awaiting_confirmation else "Executando: "
-        self.response_status_label.setText(prefix + operation)
-        self._position_response_status()
+        # The indicator shows animation only; the tool name goes to the log.
+        logger.info("Executando ferramenta: %s", status)
+
+    @staticmethod
+    def _confirmation_text(details: dict) -> str:
+        lines = [f"O Jager solicita autorização para: {details.get('title', details.get('tool', ''))}."]
+        if details.get("description"):
+            lines.append(str(details["description"]))
+        arguments = details.get("arguments") or {}
+        if arguments:
+            lines.append("\nParâmetros:")
+            lines.extend(f"• {key}: {value}" for key, value in arguments.items())
+        if details.get("reason"):
+            lines.append(f"\nAtenção: {details['reason']}")
+        lines.append("\nAutorizar somente esta execução?")
+        return "\n".join(lines)
 
     def _confirm_tool_request(self, request: dict) -> None:
-        name = request["name"]
-        arguments = request.get("arguments", {})
-        safe_details = ", ".join(
-            f"{key}: {str(value).replace(chr(10), ' ')[:160]}"
-            for key, value in arguments.items()
-            if key in {"name", "path", "url", "directory", "application", "folder", "content"}
-        )
-        action_names = {
-            "create_vault_note": "criar uma nota no Vault",
-            "edit_vault_note": "atualizar uma nota no Vault",
-            "read_vault_note": "ler uma nota no Vault",
-            "create_task": "criar uma tarefa",
-            "open_application": "abrir um aplicativo permitido",
-            "open_file": "abrir um arquivo com o aplicativo padrão",
-            "open_url": "abrir um endereço externo",
-        }
-        details = f"\n\n{safe_details}" if safe_details else ""
         approved = QMessageBox.question(
             self,
             "Confirmar ação",
-            f"O Jager deseja {action_names.get(name, name)}.{details}\n\nAutorizar?",
+            self._confirmation_text(request["details"]),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         ) == QMessageBox.Yes
         ChatWorker.resolve_confirmation(request, approved)
+
+    def _toggle_ptt(self) -> None:
+        if self._ptt_state in {"starting", "recording"} and self._audio_worker is not None:
+            self._stop_ptt()
+        elif self._audio_worker is None and self._ptt_state in {"idle", "done", "error", "cancelled"}:
+            self._start_ptt()
 
     def _start_ptt(self) -> None:
         if self._chat_worker is not None or self._audio_worker is not None:
@@ -828,8 +855,10 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _stop_ptt(self) -> None:
-        if self._audio_worker is not None:
+        if self._audio_worker is not None and self._ptt_state in {"starting", "recording"}:
+            self._ptt_timeout.stop()
             self._audio_worker.stop_recording()
+            self._set_mic_state("transcribing")
 
     def _cancel_ptt(self) -> None:
         if self._audio_worker is not None:
@@ -837,10 +866,26 @@ class MainWindow(QMainWindow):
             self._ptt_timeout.stop()
             self._set_mic_state("cancelled")
 
+    @staticmethod
+    def merge_transcription(existing: str, transcript: str) -> str:
+        """Append to what the user already typed, never replacing it."""
+        if not existing.strip():
+            return transcript
+        separator = "" if existing[-1].isspace() else " "
+        return existing + separator + transcript
+
     def _ptt_transcribed(self, text: str) -> None:
         self._ptt_timeout.stop()
-        self._set_mic_state("idle")
-        self._submit_message(text)
+        text = text.strip()
+        if not text:
+            self._ptt_failed("Não foi possível reconhecer fala nessa gravação.")
+            return
+        # Fill the field only; sending stays an explicit user action.
+        self.input.setPlainText(self.merge_transcription(self.input.toPlainText(), text))
+        self.input.moveCursor(QTextCursor.End)
+        self.input.setFocus()
+        self._set_mic_state("done")
+        self._ptt_error_reset.start()
 
     def _ptt_failed(self, message: str) -> None:
         self._ptt_timeout.stop()
@@ -850,27 +895,26 @@ class MainWindow(QMainWindow):
         self._ptt_error_reset.start()
 
     def _reset_ptt_error(self) -> None:
-        if self._ptt_state == "error" and self._audio_worker is None:
+        if self._ptt_state in {"error", "done", "cancelled"} and self._audio_worker is None:
             self._set_mic_state("idle")
 
     def _ptt_finished(self) -> None:
         self._ptt_timeout.stop()
         self._audio_worker = None
         self.microphone_button.setEnabled(self._chat_worker is None)
-        if self.microphone_button.toolTip() in {
-            "Gravando… solte para transcrever",
-            "Processando fala…",
-            "Iniciando microfone…",
-            "Gravação cancelada",
-        }:
+        if self._ptt_state in {"starting", "recording", "transcribing", "downloading_model"}:
             self._set_mic_state("idle")
 
     def _set_mic_state(self, state: str) -> None:
+        if state == "processing":
+            state = "transcribing"
         states = {
-            "idle": ("fa5s.microphone", "#B9C9E2", "Pressione e segure para falar"),
+            "idle": ("fa5s.microphone", "#B9C9E2", "Clique para começar a gravar"),
             "starting": ("fa5s.microphone", "#FBBF24", "Iniciando microfone…"),
-            "recording": ("fa5s.microphone", "#F87171", "Gravando… solte para transcrever"),
-            "processing": ("fa5s.spinner", "#FBBF24", "Processando fala…"),
+            "recording": ("fa5s.stop", "#FFFFFF", "Gravando… clique para parar e transcrever"),
+            "transcribing": ("fa5s.spinner", "#FBBF24", "Transcrevendo fala…"),
+            "downloading_model": ("fa5s.spinner", "#FBBF24", "Baixando modelo de voz (primeira vez)…"),
+            "done": ("fa5s.check", "#34D399", "Transcrição inserida no campo de texto"),
             "cancelled": ("fa5s.microphone-slash", "#94A3B8", "Gravação cancelada"),
             "error": ("fa5s.exclamation-circle", "#F87171", "Falha na gravação; tente novamente"),
         }
@@ -878,10 +922,16 @@ class MainWindow(QMainWindow):
         self.microphone_button.setIcon(qta.icon(icon, color=color))
         self.microphone_button.setToolTip(tooltip)
         self.microphone_button.setAccessibleName(tooltip)
-        self._ptt_state = state
-        if state == "cancelled":
-            self.microphone_button.setEnabled(True)
-        elif self._chat_worker is None and self._audio_worker is None:
+        self._ptt_state = state if state in states else "idle"
+        self.microphone_button.setProperty(
+            "pttState", "recording" if state == "recording" else "idle"
+        )
+        self.microphone_button.style().unpolish(self.microphone_button)
+        self.microphone_button.style().polish(self.microphone_button)
+        if state in {"starting", "transcribing", "downloading_model"}:
+            # Only a recording can be toggled; wait for the worker otherwise.
+            self.microphone_button.setEnabled(False)
+        elif state == "recording" or (self._chat_worker is None and self._audio_worker is None):
             self.microphone_button.setEnabled(True)
 
     def eventFilter(self, watched, event) -> bool:
@@ -889,7 +939,6 @@ class MainWindow(QMainWindow):
             QEvent.Type.WindowDeactivate,
             QEvent.Type.ApplicationDeactivate,
         }:
-            self._cancel_ptt()
             token_field = getattr(self, "_telegram_token_field", None)
             if token_field is not None:
                 self._hide_telegram_token(token_field)
@@ -915,13 +964,6 @@ class MainWindow(QMainWindow):
                 token_field = getattr(self, "_telegram_token_field", None)
                 if token_field is not None:
                     self._hide_telegram_token(token_field)
-        elif (
-            watched is getattr(self, "microphone_button", None)
-            and event.type() == QEvent.Type.FocusOut
-            and self._audio_worker is not None
-            and getattr(self, "_ptt_state", "idle") in {"starting", "recording"}
-        ):
-            self._cancel_ptt()
         elif (
             watched is self
             and event.type() == QEvent.Type.KeyPress
@@ -1197,17 +1239,45 @@ class MainWindow(QMainWindow):
         self._load_conversations()
         self._load_history()
 
-    def open_settings(self) -> None:
+    @staticmethod
+    def _add_field(layout, title: str, description: str, control=None) -> None:
+        """Title, then explanatory description, then the control itself."""
+        title_label = QLabel(title)
+        title_label.setObjectName("fieldTitle")
+        layout.addWidget(title_label)
+        if description:
+            description_label = QLabel(description)
+            description_label.setObjectName("muted")
+            description_label.setWordWrap(True)
+            layout.addWidget(description_label)
+        if isinstance(control, QWidget):
+            layout.addWidget(control)
+            control.setAccessibleDescription(description)
+        elif control is not None:
+            layout.addLayout(control)
+
+    def _build_settings_dialog(self) -> tuple[QDialog, dict]:
         dialog = QDialog(self)
         dialog.installEventFilter(self)
         dialog.setWindowTitle("Configurações")
-        dialog.resize(600, 780)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Endereço do Ollama"))
-        ollama_url = QLineEdit(self.settings.ollama_url)
-        layout.addWidget(ollama_url)
+        dialog.resize(640, 780)
+        outer = QVBoxLayout(dialog)
+        tabs = QTabWidget()
+        outer.addWidget(tabs, 1)
+        general = QWidget()
+        layout = QVBoxLayout(general)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(general)
+        tabs.addTab(scroll, "Geral")
+        controls: dict = {"tabs": tabs}
+        add = self._add_field
 
-        layout.addWidget(QLabel("Dispositivo de saída de áudio"))
+        ollama_url = QLineEdit(self.settings.ollama_url)
+        ollama_url.setAccessibleName("URL do Ollama")
+        add(layout, "URL do Ollama", "Endereço local do servidor utilizado pelo assistente.", ollama_url)
+
         audio_row = QHBoxLayout()
         audio_output = QComboBox()
         audio_output.setMinimumWidth(280)
@@ -1215,46 +1285,14 @@ class MainWindow(QMainWindow):
         audio_row.addWidget(audio_output, 1)
         refresh_audio = QPushButton(self._icon("fa5s.sync-alt"), " Atualizar")
         refresh_audio.clicked.connect(
-            lambda: self._populate_audio_outputs(
-                audio_output, audio_output.currentData()
-            )
+            lambda: self._populate_audio_outputs(audio_output, audio_output.currentData())
         )
         audio_row.addWidget(refresh_audio)
-        layout.addLayout(audio_row)
-        layout.addWidget(QLabel("Dispositivo de entrada de áudio"))
-        input_audio_row = QHBoxLayout()
-        audio_input = QComboBox()
-        audio_input.setMinimumWidth(280)
-        audio_input.setAccessibleName("Dispositivo de entrada de áudio")
-        input_audio_row.addWidget(audio_input, 1)
-        refresh_input_audio = QPushButton(self._icon("fa5s.sync-alt"), " Atualizar")
-        refresh_input_audio.clicked.connect(
-            lambda: self._populate_audio_inputs(
-                audio_input, audio_input.currentData()
-            )
+        add(
+            layout, "Dispositivo de saída de áudio",
+            "A saída escolhida será usada pelo TTS local, sem alterar o dispositivo padrão do sistema.",
+            audio_row,
         )
-        input_audio_row.addWidget(refresh_input_audio)
-        layout.addLayout(input_audio_row)
-        input_audio_notice = QLabel(
-            "A entrada escolhida será usada para gravar a fala; a captura usa PortAudio."
-        )
-        input_audio_notice.setObjectName("muted")
-        input_audio_notice.setWordWrap(True)
-        layout.addWidget(input_audio_notice)
-        self._active_input_audio_combo = audio_input
-        self._active_input_audio_status = QLabel("")
-        self._active_input_audio_status.setObjectName("muted")
-        self._active_input_audio_status.setWordWrap(True)
-        layout.addWidget(self._active_input_audio_status)
-        self._populate_audio_inputs(
-            audio_input, self.settings.get("audio_input_id")
-        )
-        audio_notice = QLabel(
-            "A saída escolhida será usada pelo TTS local, sem alterar o dispositivo padrão do Windows."
-        )
-        audio_notice.setObjectName("muted")
-        audio_notice.setWordWrap(True)
-        layout.addWidget(audio_notice)
         self._audio_settings_status = QLabel("")
         self._audio_settings_status.setObjectName("muted")
         self._audio_settings_status.setWordWrap(True)
@@ -1264,78 +1302,118 @@ class MainWindow(QMainWindow):
         self._populate_audio_outputs(audio_output, self.settings.get("audio_output_id"))
         self._telegram_dialog = dialog
 
-        layout.addWidget(QLabel("Modelo de voz Piper (.onnx)"))
+        input_audio_row = QHBoxLayout()
+        audio_input = QComboBox()
+        audio_input.setMinimumWidth(280)
+        audio_input.setAccessibleName("Dispositivo de entrada de áudio")
+        input_audio_row.addWidget(audio_input, 1)
+        refresh_input_audio = QPushButton(self._icon("fa5s.sync-alt"), " Atualizar")
+        refresh_input_audio.clicked.connect(
+            lambda: self._populate_audio_inputs(audio_input, audio_input.currentData())
+        )
+        input_audio_row.addWidget(refresh_input_audio)
+        add(
+            layout, "Dispositivo de entrada de áudio",
+            "A entrada escolhida será usada para gravar a fala; a captura usa PortAudio.",
+            input_audio_row,
+        )
+        self._active_input_audio_combo = audio_input
+        self._active_input_audio_status = QLabel("")
+        self._active_input_audio_status.setObjectName("muted")
+        self._active_input_audio_status.setWordWrap(True)
+        layout.addWidget(self._active_input_audio_status)
+        self._populate_audio_inputs(audio_input, self.settings.get("audio_input_id"))
+
         piper_model_row = QHBoxLayout()
         piper_model = QLineEdit(self.settings.get("piper_model_path"))
         piper_model.setPlaceholderText("Selecione um modelo Piper em português")
         piper_model.setAccessibleName("Modelo de voz Piper")
         piper_model_row.addWidget(piper_model, 1)
-        browse_piper_model = QPushButton(
-            self._icon("fa5s.folder-open"), " Selecionar modelo"
-        )
-        browse_piper_model.clicked.connect(
-            lambda: self._choose_piper_model(piper_model)
-        )
+        browse_piper_model = QPushButton(self._icon("fa5s.folder-open"), " Selecionar modelo")
+        browse_piper_model.clicked.connect(lambda: self._choose_piper_model(piper_model))
         piper_model_row.addWidget(browse_piper_model)
-        layout.addLayout(piper_model_row)
-        piper_notice = QLabel(
-            "Use um modelo Piper .onnx com o arquivo .onnx.json correspondente na mesma pasta."
+        add(
+            layout, "Modelo de voz Piper (.onnx)",
+            "Use um modelo Piper .onnx com o arquivo .onnx.json correspondente na mesma pasta.",
+            piper_model_row,
         )
-        piper_notice.setObjectName("muted")
-        piper_notice.setWordWrap(True)
-        layout.addWidget(piper_notice)
 
-        layout.addWidget(QLabel("Diretório do Vault do Obsidian"))
         path_row = QHBoxLayout()
         vault_path = QLineEdit(self.settings.get("vault_path"))
         vault_path.setPlaceholderText("Nenhum Vault configurado")
+        vault_path.setAccessibleName("Diretório do Vault do Obsidian")
         path_row.addWidget(vault_path, 1)
         browse = QPushButton(self._icon("fa5s.folder-open"), " Selecionar pasta")
-        browse.clicked.connect(
-            lambda: self._choose_vault_directory(vault_path)
-        )
+        browse.clicked.connect(lambda: self._choose_vault_directory(vault_path))
         path_row.addWidget(browse)
-        layout.addLayout(path_row)
-        voice_response = QCheckBox("Responder por áudio")
-        voice_response.setChecked(
-            self.settings.get("voice_response_enabled").lower() == "true"
+        add(
+            layout, "Diretório do Vault do Obsidian",
+            "Pasta raiz das notas. As ferramentas do Obsidian só acessam arquivos dentro dela.",
+            path_row,
         )
+
+        voice_response = QCheckBox("Ativado")
+        voice_response.setAccessibleName("Responder por áudio")
+        voice_response.setChecked(self.settings.get("voice_response_enabled").lower() == "true")
         voice_response.setEnabled(self._speech_supported)
-        layout.addWidget(voice_response)
-        progressive_audio = QCheckBox("Reproduzir áudio conforme o texto é gerado")
-        progressive_audio.setChecked(
-            self.settings.get("streaming_audio").lower() == "true"
-        )
-        progressive_audio.setEnabled(
-            self._speech_supported and voice_response.isChecked()
-        )
+        add(layout, "Responder por áudio", "Fala as respostas do assistente usando o TTS local.", voice_response)
+        progressive_audio = QCheckBox("Ativado")
+        progressive_audio.setAccessibleName("Reproduzir áudio conforme o texto é gerado")
+        progressive_audio.setChecked(self.settings.get("streaming_audio").lower() == "true")
+        progressive_audio.setEnabled(self._speech_supported and voice_response.isChecked())
         voice_response.toggled.connect(
-            lambda checked: progressive_audio.setEnabled(
-                self._speech_supported and checked
-            )
+            lambda checked: progressive_audio.setEnabled(self._speech_supported and checked)
         )
-        progressive_audio.setToolTip(
-            "Fala frases conforme chegam do modelo; requer respostas por áudio."
+        add(
+            layout, "Reproduzir áudio conforme o texto é gerado",
+            "Fala frases conforme chegam do modelo; requer respostas por áudio.",
+            progressive_audio,
         )
-        layout.addWidget(progressive_audio)
         if not self._speech_supported:
-            speech_notice = QLabel(
-                "O backend de reprodução multimídia não está disponível neste sistema."
-            )
+            speech_notice = QLabel("O backend de reprodução multimídia não está disponível neste sistema.")
             speech_notice.setObjectName("muted")
             speech_notice.setWordWrap(True)
             layout.addWidget(speech_notice)
-        layout.addWidget(QLabel("Máximo de chamadas de ferramenta por resposta"))
-        tool_iterations = QSpinBox()
-        tool_iterations.setRange(1, 8)
-        try:
-            tool_iterations.setValue(int(self.settings.get("tool_iteration_limit")))
-        except ValueError:
-            tool_iterations.setValue(4)
-        layout.addWidget(tool_iterations)
+
+        def number_spin(key: str, suffix: str = "") -> QSpinBox:
+            spin = QSpinBox()
+            low, high = self.settings.NUMERIC_LIMITS[key]
+            spin.setRange(int(low), int(high))
+            spin.setValue(int(self.settings.get_number(key)))
+            if suffix:
+                spin.setSuffix(suffix)
+            return spin
+
+        tool_iterations = number_spin("tool_iteration_limit")
+        tool_iterations.setAccessibleName("Máximo de chamadas de ferramenta por resposta")
+        add(
+            layout, "Máximo de chamadas de ferramenta por resposta",
+            "Limite de rodadas em que o modelo pode usar ferramentas antes de responder.",
+            tool_iterations,
+        )
+        cycle_timeout = number_spin("tool_cycle_timeout", " s")
+        cycle_timeout.setAccessibleName("Duração máxima do ciclo de ferramentas")
+        add(layout, "Duração máxima do ciclo de ferramentas",
+            "Tempo total permitido para uma resposta que use ferramentas.", cycle_timeout)
+        connect_timeout = number_spin("ollama_connect_timeout", " s")
+        connect_timeout.setAccessibleName("Timeout de conexão com o Ollama")
+        add(layout, "Timeout de conexão com o Ollama",
+            "Tempo máximo para estabelecer a conexão com o servidor.", connect_timeout)
+        response_timeout = number_spin("ollama_response_timeout", " s")
+        response_timeout.setAccessibleName("Espera pelo início da resposta")
+        add(layout, "Espera pelo início da resposta",
+            "Tempo máximo até o primeiro dado; inclui o carregamento do modelo e a leitura do prompt.",
+            response_timeout)
+        idle_timeout = number_spin("ollama_idle_timeout", " s")
+        idle_timeout.setAccessibleName("Inatividade do stream")
+        add(layout, "Inatividade do stream",
+            "Tempo máximo sem novos dados durante uma resposta em andamento.", idle_timeout)
+        total_timeout = number_spin("ollama_total_timeout", " s")
+        total_timeout.setAccessibleName("Duração total de uma resposta")
+        add(layout, "Duração total de uma resposta",
+            "Limite absoluto de uma única chamada ao Ollama, mesmo com o stream ativo.", total_timeout)
 
         layout.addSpacing(8)
-        layout.addWidget(QLabel("Integração com Telegram"))
         token_row = QHBoxLayout()
         telegram_token = QLineEdit()
         telegram_token.setEchoMode(QLineEdit.EchoMode.Password)
@@ -1347,17 +1425,15 @@ class MainWindow(QMainWindow):
         show_token = QPushButton(self._icon("fa5s.eye"), "")
         show_token.setToolTip("Mantenha pressionado para mostrar o token")
         show_token.setAccessibleName("Manter pressionado para revelar o token")
-        show_token.setAccessibleDescription(
-            "Revela o token somente enquanto o botão estiver pressionado."
-        )
-        show_token.pressed.connect(
-            lambda: self._show_telegram_token(telegram_token)
-        )
-        show_token.released.connect(
-            lambda: self._hide_telegram_token(telegram_token)
-        )
+        show_token.setAccessibleDescription("Revela o token somente enquanto o botão estiver pressionado.")
+        show_token.pressed.connect(lambda: self._show_telegram_token(telegram_token))
+        show_token.released.connect(lambda: self._hide_telegram_token(telegram_token))
         token_row.addWidget(show_token)
-        layout.addLayout(token_row)
+        add(
+            layout, "Integração com Telegram",
+            "Token do bot, guardado no armazenamento seguro do sistema.",
+            token_row,
+        )
         try:
             configured = bool(secure_store.load_telegram_token())
             telegram_status = (
@@ -1371,10 +1447,12 @@ class MainWindow(QMainWindow):
         self._telegram_status_label.setObjectName("muted")
         self._telegram_status_label.setWordWrap(True)
         layout.addWidget(self._telegram_status_label)
+        layout.addStretch(1)
 
-        dialog.finished.connect(
-            lambda _result: self._hide_telegram_token(telegram_token)
-        )
+        permissions_tab, permission_combos = self._build_permissions_tab()
+        tabs.addTab(permissions_tab, "Permissões")
+
+        dialog.finished.connect(lambda _result: self._hide_telegram_token(telegram_token))
         dialog.finished.connect(self._settings_dialog_finished)
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -1382,40 +1460,95 @@ class MainWindow(QMainWindow):
         save.setObjectName("primary")
         save.clicked.connect(dialog.accept)
         buttons.addWidget(save)
-        layout.addLayout(buttons)
+        outer.addLayout(buttons)
+        controls.update(
+            ollama_url=ollama_url, audio_output=audio_output, audio_input=audio_input,
+            piper_model=piper_model, vault_path=vault_path, voice_response=voice_response,
+            progressive_audio=progressive_audio, telegram_token=telegram_token,
+            numbers={
+                "tool_iteration_limit": tool_iterations,
+                "tool_cycle_timeout": cycle_timeout,
+                "ollama_connect_timeout": connect_timeout,
+                "ollama_response_timeout": response_timeout,
+                "ollama_idle_timeout": idle_timeout,
+                "ollama_total_timeout": total_timeout,
+            },
+            permissions=permission_combos,
+        )
+        return dialog, controls
+
+    def _build_permissions_tab(self) -> tuple[QWidget, dict[str, QComboBox]]:
+        """One row per implemented tool; the registry is the single source of truth."""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        intro = QLabel(
+            "Escolha, para cada ferramenta, se o Jager deve pedir autorização a cada uso. "
+            "Mesmo com “Permitir sempre”, as validações de caminho, rede e execução continuam ativas."
+        )
+        intro.setObjectName("muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        combos: dict[str, QComboBox] = {}
+        category = None
+        for entry in sorted(self.assistant.tools.entries(), key=lambda e: (e["category"], e["title"])):
+            if entry["category"] != category:
+                category = entry["category"]
+                heading = QLabel(category)
+                heading.setObjectName("fieldTitle")
+                layout.addSpacing(6)
+                layout.addWidget(heading)
+            description = entry["description"]
+            if not entry["available"]:
+                description += f"\nIndisponível: {entry['reason']}"
+            combo = QComboBox()
+            for policy, label in POLICY_LABELS.items():
+                combo.addItem(label, policy)
+            combo.setCurrentIndex(max(0, combo.findData(entry["policy"])))
+            combo.setAccessibleName(f"Permissão: {entry['title']}")
+            self._add_field(layout, entry["title"], description, combo)
+            combos[entry["id"]] = combo
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(content)
+        return scroll, combos
+
+    def open_settings(self) -> None:
+        dialog, controls = self._build_settings_dialog()
         if dialog.exec() != QDialog.Accepted:
             return
+        self._apply_settings(controls)
+
+    def _apply_settings(self, controls: dict) -> bool:
         try:
-            url = ollama_url.text().strip().rstrip("/")
+            url = controls["ollama_url"].text().strip().rstrip("/")
             parsed = urlsplit(url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                raise ValueError(
-                    "A URL do Ollama deve começar com http:// ou https://."
-                )
-            chosen_path = vault_path.text().strip()
+                raise ValueError("A URL do Ollama deve começar com http:// ou https://.")
+            chosen_path = controls["vault_path"].text().strip()
             if chosen_path:
                 Vault(chosen_path)
-            selected_audio_id = audio_output.currentData()
-            selected_input_audio_id = audio_input.currentData()
-            selected_piper_model = piper_model.text().strip()
+            selected_audio_id = controls["audio_output"].currentData()
+            selected_input_audio_id = controls["audio_input"].currentData()
+            selected_piper_model = controls["piper_model"].text().strip()
             if selected_piper_model and not Path(selected_piper_model).is_file():
                 raise ValueError("O arquivo do modelo Piper não foi encontrado.")
             if selected_piper_model and not selected_piper_model.lower().endswith(".onnx"):
                 raise ValueError("O modelo de voz Piper deve ser um arquivo .onnx.")
-            entered_token = telegram_token.text().strip()
+            entered_token = controls["telegram_token"].text().strip()
             if entered_token:
                 if not re.fullmatch(r"\d{5,12}:[A-Za-z0-9_-]{20,128}", entered_token):
                     raise ValueError("O formato do token do Telegram parece inválido.")
                 secure_store.save_telegram_token(entered_token)
             self.settings.set("ollama_url", url)
             self.settings.set("vault_path", chosen_path)
-            self.settings.set(
-                "voice_response_enabled", str(voice_response.isChecked()).lower()
-            )
-            self.settings.set(
-                "streaming_audio", str(progressive_audio.isChecked()).lower()
-            )
-            self.settings.set("tool_iteration_limit", str(tool_iterations.value()))
+            self.settings.set("voice_response_enabled", str(controls["voice_response"].isChecked()).lower())
+            self.settings.set("streaming_audio", str(controls["progressive_audio"].isChecked()).lower())
+            for key, spin in controls["numbers"].items():
+                self.settings.set(key, str(spin.value()))
+            for tool_id, combo in controls["permissions"].items():
+                self.assistant.tools.permissions.set_policy(tool_id, combo.currentData())
             if isinstance(selected_audio_id, str):
                 self.settings.set("audio_output_id", selected_audio_id)
             if isinstance(selected_input_audio_id, str):
@@ -1423,12 +1556,15 @@ class MainWindow(QMainWindow):
             self.settings.set("piper_model_path", selected_piper_model)
         except ValueError as error:
             QMessageBox.warning(self, "Configuração inválida", str(error))
-            return
+            return False
         except secure_store.SecureStoreError as error:
             QMessageBox.warning(self, "Armazenamento seguro indisponível", str(error))
-            return
+            return False
         self.ollama.base_url = self.settings.ollama_url
+        if hasattr(self.ollama, "timeouts"):
+            self.ollama.timeouts = OllamaTimeouts.from_settings(self.settings)
         self.refresh_models()
+        return True
 
     def _audio_outputs_changed(self) -> None:
         combo = getattr(self, "_active_audio_combo", None)
@@ -1515,7 +1651,7 @@ class MainWindow(QMainWindow):
             available[identifier] = device.description()
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("Padrão do Windows", "default")
+        combo.addItem("Padrão do sistema", "default")
         for identifier, description in available.items():
             combo.addItem(description, identifier)
         if saved_id != "default" and saved_id not in available:
@@ -1595,6 +1731,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._stop_speech()
+        self.assistant.tools.terminal.terminate_all()
         if self._chat_worker is not None:
             self._chat_worker.cancel()
         if self._audio_worker is not None:

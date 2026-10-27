@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 import threading
 import wave
@@ -9,6 +10,49 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
+
+# On Windows without Developer Mode the Hugging Face cache cannot use symlinks and
+# silently falls back to file copies. That works without administrator rights, so the
+# advisory is redundant noise; the behavior is logged once in _load_model instead.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+WHISPER_MODEL_NAME = "tiny"
+_model_cache: dict[type, object] = {}
+_model_lock = threading.Lock()
+
+
+def _load_model(model_class, on_download=None):
+    """Return the process-wide Whisper model, loading it lazily.
+
+    The local cache is tried first (local_files_only), so a cached model causes no
+    network request. Only a missing or incomplete cache triggers a download, which
+    runs in the calling worker thread. No Hugging Face token is required.
+    """
+    with _model_lock:
+        cached = _model_cache.get(model_class)
+        if cached is not None:
+            return cached
+        options = {"device": "cpu", "compute_type": "int8"}
+        try:
+            model = model_class(WHISPER_MODEL_NAME, local_files_only=True, **options)
+            logger.info("Modelo Whisper '%s' carregado do cache local.", WHISPER_MODEL_NAME)
+        except Exception as cache_error:
+            logger.info(
+                "Cache local do Whisper ausente ou incompleto (%s); baixando.",
+                type(cache_error).__name__,
+            )
+            if on_download is not None:
+                on_download()
+            try:
+                model = model_class(WHISPER_MODEL_NAME, **options)
+            except Exception as error:
+                logger.warning("Falha ao baixar o modelo Whisper: %s", type(error).__name__)
+                raise RuntimeError(
+                    "Não foi possível obter o modelo de reconhecimento de voz. "
+                    "Verifique a conexão com a internet; se já o baixou, o cache pode estar incompleto."
+                ) from error
+        _model_cache[model_class] = model
+        return model
 
 
 class PushToTalkWorker(QThread):
@@ -98,7 +142,7 @@ class PushToTalkWorker(QThread):
                 recording.setframerate(16000)
                 recording.writeframes(audio)
 
-            self.state_changed.emit("processing")
+            self.state_changed.emit("transcribing")
             try:
                 from faster_whisper import WhisperModel
             except ImportError as error:
@@ -106,7 +150,10 @@ class PushToTalkWorker(QThread):
                     "Reconhecimento local indisponível. Instale faster-whisper."
                 ) from error
 
-            model = WhisperModel("tiny", device="cpu", compute_type="int8")
+            model = _load_model(
+                WhisperModel, lambda: self.state_changed.emit("downloading_model")
+            )
+            self.state_changed.emit("transcribing")
             segments, _info = model.transcribe(
                 str(temporary_path),
                 language="pt",
