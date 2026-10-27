@@ -1,0 +1,1 @@
+create_vault_note: cria uma nota nova. `name` é o nome pedido (raiz do Vault por padrão) e `content` o texto completo e literal. Não sobrescreve notas existentes; se existir, use read_vault_note + edit_vault_note. Checklists seguem o formato de checklists.md.

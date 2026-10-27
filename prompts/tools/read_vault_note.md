@@ -1,0 +1,1 @@
+read_vault_note: lê uma nota do Vault. Passe `path` (ex.: "Trabalho.md"). O resultado traz `content` e `version` (SHA-256 de 64 caracteres hexadecimais). Sempre use antes de editar uma nota existente.
