@@ -154,8 +154,11 @@ class PushToTalkWorker(QThread):
                 WhisperModel, lambda: self.state_changed.emit("downloading_model")
             )
             self.state_changed.emit("transcribing")
+            import numpy as np
+
+            samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
             segments, _info = model.transcribe(
-                str(temporary_path),
+                samples,
                 language="pt",
                 beam_size=1,
                 vad_filter=False,
