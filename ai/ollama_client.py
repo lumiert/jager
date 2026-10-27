@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -75,12 +76,23 @@ class OllamaClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=min(self.timeout, 1.0)) as response:
+            # The full timeout applies while waiting for the first response
+            # (the model may still be loading); afterwards reads poll briefly
+            # so cancellation stays responsive.
+            with urlopen(request, timeout=self.timeout) as response:
+                try:
+                    response.fp.raw._sock.settimeout(1.0)
+                except AttributeError:
+                    pass
+                deadline = time.monotonic() + self.timeout
                 while not cancelled.is_set():
                     try:
                         line = response.readline()
                     except (TimeoutError, socket.timeout):
+                        if time.monotonic() > deadline:
+                            raise
                         continue
+                    deadline = time.monotonic() + self.timeout
                     if not line:
                         break
                     try:
