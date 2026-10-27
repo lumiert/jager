@@ -733,7 +733,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(path_row)
         progressive_audio = QCheckBox("Reproduzir áudio conforme o texto é gerado")
         progressive_audio.setChecked(
-            self.settings.get("streaming_audio", "false").lower() == "true"
+            self.settings.get("streaming_audio").lower() == "true"
         )
         progressive_audio.setEnabled(False)
         progressive_audio.setToolTip("Ativo após a integração com TTS ser implementada.")
