@@ -368,7 +368,7 @@ class ToolRegistry:
             ),
             Tool(
                 "create_task", "Criar tarefa",
-                "Criar uma tarefa na lista local do Jager. Não duplica uma tarefa pendente com o mesmo título.",
+                "Criar uma tarefa no banco local do Jager. NÃO use para listas de hoje, trabalho, projetos, pendências ou ideias (essas são notas do Vault: Hoje.md, Trabalho.md, Projetos.md, Pendências.md, Ideias.md). Não duplica uma tarefa pendente com o mesmo título.",
                 "Tarefas",
                 _object_schema(
                     {"title": {"type": "string", "minLength": 1, "maxLength": 500}}, ["title"]

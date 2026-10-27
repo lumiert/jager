@@ -49,6 +49,22 @@ def load_tool_prompts() -> str:
     return "\n".join(parts)
 
 
+_NOTE_LISTS = {
+    "hoje": "Hoje.md", "trabalho": "Trabalho.md", "projetos": "Projetos.md",
+    "projeto": "Projetos.md", "pendências": "Pendências.md", "pendencias": "Pendências.md",
+    "ideias": "Ideias.md",
+}
+_LIST_REQUEST = re.compile(
+    r"\b(?:lista|checklist|tarefas|agenda)\s+(?:de\s+|do\s+|da\s+)?(hoje|trabalho|projetos?|pend[êe]ncias|ideias)\b",
+    re.IGNORECASE,
+)
+
+
+def _note_list_target(user_text: str) -> str | None:
+    match = _LIST_REQUEST.search(user_text)
+    return _NOTE_LISTS[match.group(1).casefold()] if match else None
+
+
 _SUGGESTION = re.compile(r"sugest|ideia|invente|exemplo|\bsugira|recomend", re.IGNORECASE)
 _CHECKBOX = re.compile(r"^\s*[-*+]\s*\[[ xX]\]\s*(.+?)\s*$")
 _CONTENT_FIELDS = {
@@ -324,6 +340,19 @@ class Assistant:
         if key in ledger:
             return name, arguments, {**ledger[key], "duplicate_call": True,
                                      "note": "Chamada idêntica já executada; resultado reutilizado, nada foi repetido."}
+
+        target = _note_list_target(user_text) if name == "create_task" else None
+        if target:
+            return name, arguments, {
+                "ok": False, "status": "invalid",
+                "error": (
+                    f"Pedidos de lista de hoje/trabalho/projetos/pendências/ideias usam a nota "
+                    f"{target} do Vault, não create_task. Chame read_vault_note com path "
+                    f"'{target}' (ou list_vault_notes); se ela existir, use edit_vault_note com o "
+                    f"conteúdo completo mais '- [ ] <frase completa pedida pelo usuário>'; "
+                    f"se não existir, use create_vault_note com name '{target}'."
+                ),
+            }
 
         rejection = self.fidelity_error(name, arguments, user_text)
         if rejection:
