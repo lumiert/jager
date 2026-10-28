@@ -182,6 +182,79 @@ class NoteFidelityTests(Base):
         self.assertFalse(tool_message["ok"])
         self.assertIn("Revisar objetivos semanais", tool_message["error"])
 
+    def test_completing_a_task_preserves_other_items_and_retries_incomplete_edits(self) -> None:
+        self.allow("read_vault_note", "edit_vault_note")
+        original = (
+            "# Trabalho\n\n"
+            "- [ ] Placa de wifi nfc\n"
+            "- [ ] Separar pedidos\n"
+            "- [x] Conferir estoque\n"
+        )
+        (self.vault / "Trabalho.md").write_text(original, encoding="utf-8")
+        read_call = iter([{"tool_calls": [{"function": {
+            "name": "read_vault_note",
+            "arguments": {"path": "Trabalho.md"},
+        }}]}])
+        incomplete_edit = iter([{"tool_calls": [{"function": {
+            "name": "edit_vault_note",
+            "arguments": {
+                "path": "Trabalho.md",
+                "content": "# Trabalho\n\n- [x] Placa de wifi nfc\n",
+            },
+        }}]}])
+        complete_edit = iter([{"tool_calls": [{"function": {
+            "name": "edit_vault_note",
+            "arguments": {
+                "path": "Trabalho.md",
+                "content": (
+                    "# Trabalho\n\n"
+                    "- [x] Placa de wifi nfc\n"
+                    "- [ ] Separar pedidos\n"
+                    "- [x] Conferir estoque\n"
+                ),
+            },
+        }}]}])
+        self.ollama.chat_stream_events.side_effect = [
+            read_call,
+            incomplete_edit,
+            complete_edit,
+            iter([{"content": 'A tarefa "Placa de wifi nfc" foi concluída.'}]),
+        ]
+
+        answer = self.assistant.respond(
+            self.conversation, "tarefas da empresa, marque como concluído Placa de wifi nfc"
+        )
+
+        self.assertIn("foi concluída", answer)
+        self.assertEqual(
+            (self.vault / "Trabalho.md").read_text(encoding="utf-8"),
+            (
+                "# Trabalho\n\n"
+                "- [x] Placa de wifi nfc\n"
+                "- [ ] Separar pedidos\n"
+                "- [x] Conferir estoque\n"
+            ),
+        )
+        tool_messages = [
+            message
+            for message in self.ollama.chat_stream_events.call_args_list[1].args[1]
+            if message.get("role") == "tool"
+        ]
+        read_result = json.loads(tool_messages[-1]["content"])
+        self.assertNotIn("version", read_result["result"])
+        retry_messages = [
+            message
+            for message in self.ollama.chat_stream_events.call_args_list[2].args[1]
+            if message.get("role") == "tool"
+        ]
+        rejections = [
+            json.loads(message["content"])
+            for message in retry_messages
+            if not json.loads(message["content"]).get("ok")
+        ]
+        self.assertTrue(rejections)
+        self.assertIn("removeria itens", rejections[-1]["error"])
+
     def test_suggestions_are_allowed_when_user_asks_for_them(self) -> None:
         error = Assistant.fidelity_error(
             "create_vault_note",

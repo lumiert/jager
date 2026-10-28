@@ -30,8 +30,26 @@ class AssistantTests(unittest.TestCase):
         self.database.close()
         self.directory.cleanup()
 
+    @staticmethod
+    def tool_call(name, arguments):
+        return iter([{
+            "tool_calls": [{
+                "function": {"name": name, "arguments": arguments},
+            }],
+        }])
+
     def test_notes_and_tasks_use_vault_markdown(self) -> None:
         note = self.assistant.respond(self.conversation_id, "Anote que comprar PETG")
+        self.ollama.chat_stream_events.side_effect = [
+            self.tool_call(
+                "create_vault_note",
+                {
+                    "name": "Pendências.md",
+                    "content": "# Pendências\n\n- [ ] revisar código\n",
+                },
+            ),
+            iter([{"content": "Tarefa adicionada à lista Pendências.md."}]),
+        ]
         task = self.assistant.respond(self.conversation_id, "Crie uma tarefa revisar código")
         notes = self.assistant.respond(self.conversation_id, "Minhas notas")
         tasks = self.assistant.respond(self.conversation_id, "Tarefas pendentes")
@@ -50,9 +68,19 @@ class AssistantTests(unittest.TestCase):
                 self.assistant.tools.tool_names()
             )
         )
-        self.ollama.chat.assert_not_called()
+        self.assertEqual(self.ollama.chat_stream_events.call_count, 2)
 
     def test_today_task_request_adds_full_item_to_today_markdown(self) -> None:
+        self.ollama.chat_stream_events.side_effect = [
+            self.tool_call(
+                "create_vault_note",
+                {
+                    "name": "Hoje.md",
+                    "content": "# Hoje\n\n- [ ] o João vem buscar as encomendas aqui na loja\n",
+                },
+            ),
+            iter([{"content": "Tarefa adicionada à lista Hoje.md."}]),
+        ]
         answer = self.assistant.respond(
             self.conversation_id,
             "Hoje o João vem buscar as encomendas aqui na loja, adicione na lista de hoje",
@@ -61,6 +89,48 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(
             (self.vault_path / "Hoje.md").read_text(encoding="utf-8"),
             "# Hoje\n\n- [ ] o João vem buscar as encomendas aqui na loja\n",
+        )
+        self.assertEqual(self.ollama.chat_stream_events.call_count, 2)
+        tool_messages = [
+            message
+            for message in self.ollama.chat_stream_events.call_args_list[1].args[1]
+            if message.get("role") == "tool"
+        ]
+        self.assertNotIn("sha256", tool_messages[0]["content"])
+        self.assertNotIn("verified", tool_messages[0]["content"])
+        self.assertNotRegex(answer, r"\b[a-f0-9]{64}\b")
+
+    def test_today_task_request_preserves_existing_list_items(self) -> None:
+        original = "# Hoje\n\n- [ ] Buscar pão\n"
+        (self.vault_path / "Hoje.md").write_text(original, encoding="utf-8")
+        self.ollama.chat_stream_events.side_effect = [
+            self.tool_call("read_vault_note", {"path": "Hoje.md"}),
+            self.tool_call(
+                "edit_vault_note",
+                {
+                    "path": "Hoje.md",
+                    "content": (
+                        "# Hoje\n\n"
+                        "- [ ] Buscar pão\n"
+                        "- [ ] O João vem buscar as encomendas na loja\n"
+                    ),
+                },
+            ),
+            iter([{"content": "Tarefa adicionada à lista Hoje.md."}]),
+        ]
+
+        self.assistant.respond(
+            self.conversation_id,
+            "Hoje o João vem buscar as encomendas aqui na loja, adicione na lista de hoje",
+        )
+
+        self.assertEqual(
+            (self.vault_path / "Hoje.md").read_text(encoding="utf-8"),
+            (
+                "# Hoje\n\n"
+                "- [ ] Buscar pão\n"
+                "- [ ] O João vem buscar as encomendas na loja\n"
+            ),
         )
 
     def test_regular_chat_uses_ollama_and_is_saved(self) -> None:
