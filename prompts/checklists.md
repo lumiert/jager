@@ -9,3 +9,8 @@ Checklists e listas de tarefas no Vault (Obsidian):
   - Pendências.md: tarefas que precisam ser resolvidas, mas ainda não têm data definida.
   - Ideias.md: ideias para explorar futuramente, sem compromisso imediato.
 - Exemplo: "Adicione X na minha lista de tarefas" (relacionado a trabalho) => acrescentar `- [ ] X` ao final de Trabalho.md.
+- Qualquer tarefa pertence a uma nota Markdown do Vault; não há lista interna de tarefas.
+- Use Hoje.md, Trabalho.md, Projetos.md, Pendências.md ou Ideias.md conforme o assunto. Tarefas sem data ou categoria vão para Pendências.md.
+- O item é a frase pedida, completa e legível, sem cortar (ex.: "Hoje o João vem buscar as encomendas aqui na loja" => `- [ ] João vem buscar as encomendas na loja`), nunca só uma palavra como "João".
+- Para listar tarefas, leia as notas Markdown correspondentes e mostre somente itens `- [ ]`.
+- Para concluir uma tarefa, encontre o item na nota apropriada e altere `- [ ]` para `- [x]` com o conteúdo integral preservado.
