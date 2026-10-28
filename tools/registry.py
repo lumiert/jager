@@ -325,7 +325,7 @@ class ToolRegistry:
             ),
             Tool(
                 "edit_vault_note", "Editar nota do Vault",
-                "Substituir o conteúdo de uma nota Markdown existente no Vault do Obsidian. Só ocorre se a nota não tiver sido modificada externamente (expected_hash é o campo 'version' de read_vault_note, 64 caracteres hexadecimais; se omitido, a versão atual da nota é usada).",
+                "Substituir o conteúdo de uma nota Markdown existente no Vault do Obsidian. Só ocorre se a nota não tiver sido modificada externamente (expected_hash vindo de read_vault_note).",
                 "Obsidian",
                 _object_schema(
                     {
@@ -336,7 +336,7 @@ class ToolRegistry:
                             "pattern": "^[a-f0-9]{64}$",
                         },
                     },
-                    ["path", "content"],
+                    ["path", "content", "expected_hash"],
                 ),
                 "medium", True,
                 lambda args, _c: self._edit_vault_note(args),
@@ -756,10 +756,7 @@ class ToolRegistry:
 
     def _edit_vault_note(self, args: dict[str, Any]) -> dict[str, Any]:
         vault = self._vault()
-        expected = args.get("expected_hash")
-        if expected is None:
-            expected = vault.read_note(args["path"])[1]
-        vault.save_note(args["path"], args["content"], expected_hash=expected)
+        vault.save_note(args["path"], args["content"], expected_hash=args["expected_hash"])
         content, version = vault.read_note(args["path"])
         if content.replace("\r\n", "\n") != args["content"].replace("\r\n", "\n"):
             raise ToolError("A edição da nota não pôde ser verificada.")

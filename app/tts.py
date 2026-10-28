@@ -11,23 +11,6 @@ from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
 
-_voice_lock = threading.Lock()
-_voice_cache: dict[str, object] = {}
-
-
-def _load_voice(model_path: str):
-    # Loading the ONNX model per sentence made playback slow and choppy.
-    from piper import PiperVoice
-
-    with _voice_lock:
-        key = str(Path(model_path).resolve())
-        voice = _voice_cache.get(key)
-        if voice is None:
-            _voice_cache.clear()
-            voice = PiperVoice.load(model_path)
-            _voice_cache[key] = voice
-        return voice
-
 
 class SpeechSynthesisWorker(QThread):
     ready = Signal(str)
@@ -63,14 +46,14 @@ class SpeechSynthesisWorker(QThread):
                     "O arquivo .onnx.json do modelo Piper não foi encontrado."
                 )
             try:
-                import piper  # noqa: F401
+                from piper import PiperVoice
             except ImportError as error:
                 raise RuntimeError("O Piper TTS não está instalado.") from error
 
             descriptor, path = tempfile.mkstemp(suffix=".wav")
             os.close(descriptor)
             self._temporary_path = Path(path)
-            voice = _load_voice(str(model_path))
+            voice = PiperVoice.load(str(model_path))
             with wave.open(str(self._temporary_path), "wb") as audio_file:
                 voice.synthesize_wav(self.text, audio_file)
             if self._cancelled.is_set():
